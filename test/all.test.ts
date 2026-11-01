@@ -8,6 +8,7 @@ import { GestureReader, type Gesture } from '../src/gesture.js'
 import { Engine } from '../src/engine.js'
 import { WebServer } from '../src/web.js'
 import { FakeObs } from './fake-obs.js'
+import { compareVersions, newVersionInfo, recompute } from '../src/updates.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const mul = (db: number) => Math.pow(10, db / 20)
@@ -251,6 +252,7 @@ test('end to end against a pretend OBS: inputs, rider, trim, web page, import', 
 		engine.visible().map((i) => i.name),
 		['Mic', 'Music'],
 	)
+	assert.equal(engine.versions.obsVersion, '31.0.2')
 
 	// rider on Mic, fader mode
 	engine.setDefaultSetting('measureWindowMs', 500)
@@ -339,4 +341,18 @@ test('end to end against a pretend OBS: inputs, rider, trim, web page, import', 
 	engine.destroy()
 	obs.close()
 	assert.ok(!logs.some((l) => l.startsWith('error')), logs.join('\n'))
+})
+
+test('version compare and update flags', () => {
+	assert.equal(compareVersions('0.1.0', '0.1.0'), 0)
+	assert.equal(compareVersions('v0.2.0', '0.1.9'), 1)
+	assert.equal(compareVersions('31.0.2', '31.1.0'), -1)
+	assert.equal(compareVersions('1.0.0-beta', '1.0.0'), 0)
+	const v = newVersionInfo('0.1.0')
+	v.moduleLatest = '0.1.1'
+	v.obsVersion = '31.0.2'
+	v.obsLatest = '31.0.2'
+	recompute(v)
+	assert.equal(v.moduleUpdate, true)
+	assert.equal(v.obsUpdate, false)
 })

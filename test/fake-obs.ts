@@ -127,6 +127,8 @@ export class FakeObs {
 
 	#request(type: string, d: Record<string, unknown>): unknown {
 		switch (type) {
+			case 'GetVersion':
+				return { obsVersion: '31.0.2', obsWebSocketVersion: '5.5.0', rpcVersion: 1 }
 			case 'GetSourceFilterKindList':
 				return {
 					sourceFilterKinds: ['noise_suppress_filter_v2', 'noise_gate_filter', 'gain_filter', 'compressor_filter', 'limiter_filter', 'expander_filter', 'upward_compressor_filter', 'basic_eq_filter', 'color_filter_v2'],

@@ -7,3 +7,4 @@ DEBUG-*
 /.yarn
 /.vscode
 /src/page.ts
+/src/version.ts

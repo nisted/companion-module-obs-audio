@@ -12,6 +12,8 @@ import { FILTER_KINDS, filterKind, unversioned } from './filters.js'
 import { Rider, type RiderState } from './rider.js'
 import { PickupManager } from './pickup.js'
 import { GestureReader, type Gesture } from './gesture.js'
+import { latestRelease, newVersionInfo, recompute, MODULE_REPO, OBS_REPO, type VersionInfo } from './updates.js'
+import { MODULE_VERSION } from './version.js'
 import {
 	type Store,
 	type InputSettings,
@@ -109,8 +111,8 @@ export class Engine extends EventEmitter {
 	#tick: NodeJS.Timeout
 	readonly pickup: PickupManager
 	readonly gestures: GestureReader
-	/** Grid fader key -> input name it was last mapped to */
-	gridLast = new Map<string, number>()
+	versions: VersionInfo = newVersionInfo(MODULE_VERSION)
+	#updateTimer: NodeJS.Timeout | null = null
 
 	constructor(host: EngineHost, storeJson: unknown, autosave: string) {
 		super()
@@ -141,6 +143,7 @@ export class Engine extends EventEmitter {
 
 	destroy(): void {
 		clearInterval(this.#tick)
+		if (this.#updateTimer) clearInterval(this.#updateTimer)
 		for (const t of this.#fades.values()) clearInterval(t)
 		this.#fades.clear()
 		this.pickup.destroy()
@@ -157,6 +160,7 @@ export class Engine extends EventEmitter {
 		obs.on('connected', () => {
 			this.host.log('info', `Connected to OBS at ${host}:${port}`)
 			void this.refreshAll()
+			void this.#readObsVersion()
 		})
 		obs.on('disconnected', (reason: string, was: boolean) => {
 			if (was) this.host.log('warn', `Disconnected from OBS: ${reason}`)
@@ -165,6 +169,46 @@ export class Engine extends EventEmitter {
 		})
 		obs.on('event', (type: string, data: Record<string, unknown>) => this.#onEvent(type, data))
 		obs.start()
+	}
+
+	// ---- update checks --------------------------------------------------------
+
+	async #readObsVersion(): Promise<void> {
+		try {
+			const v = await this.obs!.call<{ obsVersion: string }>('GetVersion')
+			this.versions.obsVersion = v.obsVersion ?? null
+			recompute(this.versions)
+			this.#stateChanged()
+		} catch {
+			/* not essential */
+		}
+	}
+
+	/** Check for updates now and every `hours` (0 = never) */
+	setUpdateChecks(hours: number): void {
+		if (this.#updateTimer) clearInterval(this.#updateTimer)
+		this.#updateTimer = null
+		if (!(hours > 0)) return
+		void this.checkUpdates()
+		this.#updateTimer = setInterval(() => void this.checkUpdates(), hours * 3600 * 1000)
+	}
+
+	async checkUpdates(): Promise<void> {
+		const v = this.versions
+		try {
+			const [mod, obs] = await Promise.all([latestRelease(MODULE_REPO), latestRelease(OBS_REPO)])
+			v.moduleLatest = mod
+			v.obsLatest = obs
+			v.error = null
+		} catch (e) {
+			v.error = `Couldn't check for updates: ${(e as Error).message}`
+			this.host.log('debug', v.error)
+		}
+		v.checkedAt = new Date().toISOString()
+		recompute(v)
+		if (v.moduleUpdate) this.host.log('info', `OBS Audio ${v.moduleLatest} is out (this is ${v.moduleVersion})`)
+		if (v.obsUpdate) this.host.log('info', `OBS ${v.obsLatest} is out (this is ${v.obsVersion})`)
+		this.#stateChanged()
 	}
 
 	// ---- inputs and order ---------------------------------------------------
@@ -911,6 +955,7 @@ export class Engine extends EventEmitter {
 		const hidden = new Set(this.store.hidden)
 		return {
 			connected: this.connected,
+			versions: this.versions,
 			store: {
 				defaults: this.store.defaults,
 				page: this.store.page,

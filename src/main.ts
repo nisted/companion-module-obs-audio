@@ -30,6 +30,7 @@ interface Config {
 	webBind: string
 	pin: string
 	varRateHz: number
+	updateHours: number
 	/** The module's own settings, saved here by the module (not edited by hand) */
 	store?: string
 	autosave?: string
@@ -98,6 +99,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		}
 		this.#structureChanged()
 		this.#restartVarTimer()
+		this.engine.setUpdateChecks(Number(this.config.updateHours ?? 12))
 	}
 
 	#status(): void {
@@ -129,6 +131,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			this.#start()
 		}
 		if (old.varRateHz !== config.varRateHz) this.#restartVarTimer()
+		if (old.updateHours !== config.updateHours) this.engine.setUpdateChecks(Number(config.updateHours ?? 12))
 		if (config.store !== old.store) this.saveConfig(this.config)
 	}
 
@@ -149,6 +152,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			{ type: 'textinput', id: 'webBind', label: 'Fader page network address (0.0.0.0 = all)', width: 6, default: '0.0.0.0' },
 			{ type: 'textinput', id: 'pin', label: 'Fader page PIN (blank = none)', width: 3, default: '' },
 			{ type: 'number', id: 'varRateHz', label: 'Meter variables: updates per second', width: 3, default: 5, min: 1, max: 20 },
+			{ type: 'number', id: 'updateHours', label: 'Check for module and OBS updates every (hours, 0 = never)', width: 6, default: 12, min: 0, max: 720 },
 		]
 	}
 
@@ -192,6 +196,12 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		const defs: CompanionVariableDefinition[] = [
 			{ variableId: 'connected', name: 'Connected to OBS' },
 			{ variableId: 'inputs', name: 'Number of inputs shown' },
+			{ variableId: 'module_version', name: 'OBS Audio module: this version' },
+			{ variableId: 'module_latest', name: 'OBS Audio module: latest version' },
+			{ variableId: 'module_update', name: 'OBS Audio module: update available' },
+			{ variableId: 'obs_version', name: 'OBS: this version' },
+			{ variableId: 'obs_latest', name: 'OBS: latest version' },
+			{ variableId: 'obs_update', name: 'OBS: update available' },
 		]
 		this.engine.visible().forEach((inp, idx) => {
 			const n = idx + 1
@@ -226,7 +236,17 @@ class ObsAudioInstance extends InstanceBase<Config> {
 	}
 
 	#stateVariables(): CompanionVariableValues {
-		const v: CompanionVariableValues = { connected: this.engine.connected, inputs: this.engine.visible().length }
+		const ver = this.engine.versions
+		const v: CompanionVariableValues = {
+			connected: this.engine.connected,
+			inputs: this.engine.visible().length,
+			module_version: ver.moduleVersion,
+			module_latest: ver.moduleLatest ?? '',
+			module_update: ver.moduleUpdate,
+			obs_version: ver.obsVersion ?? '',
+			obs_latest: ver.obsLatest ?? '',
+			obs_update: ver.obsUpdate,
+		}
 		this.engine.visible().forEach((inp, idx) => {
 			const p = `in${idx + 1}_`
 			const set = this.engine.settings(inp.name)
@@ -672,6 +692,13 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					await e.setFilterSetting(inp, f.name, p.param.key, value)
 				},
 			},
+			check_updates: {
+				name: 'Check for module and OBS updates now',
+				options: [],
+				callback: async () => {
+					await e.checkUpdates()
+				},
+			},
 			refresh: {
 				name: 'Re-read everything from OBS',
 				options: [],
@@ -700,6 +727,29 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					if (!inp) return {}
 					const c = parseColour(await this.#text(fb.options, `c_${inp.rider.state}`, ctx), undefined)
 					return c === undefined ? {} : { bgcolor: c }
+				},
+			},
+			update_available: {
+				type: 'boolean',
+				name: 'Update available',
+				description: 'A newer OBS Audio module or OBS is out (checked on GitHub, see the connection settings)',
+				defaultStyle: { bgcolor: rgb(85, 0, 170), color: rgb(255, 255, 255) },
+				options: [
+					{
+						type: 'dropdown',
+						label: 'For',
+						id: 'which',
+						default: 'either',
+						choices: [
+							{ id: 'either', label: 'Either' },
+							{ id: 'module', label: 'This module' },
+							{ id: 'obs', label: 'OBS' },
+						],
+					},
+				],
+				callback: (fb) => {
+					const v = e.versions
+					return fb.options.which === 'module' ? v.moduleUpdate : fb.options.which === 'obs' ? v.obsUpdate : v.moduleUpdate || v.obsUpdate
 				},
 			},
 			rider_on: {

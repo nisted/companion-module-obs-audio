@@ -121,6 +121,7 @@ dialog::backdrop { background: #000a; }
 	<button id="bPost" title="Post-fader meters">POST</button>
 	<button id="bFine" title="Fine fader moves while on (or drag with two fingers)">FINE</button>
 	<span id="msg"></span>
+	<button id="upd" class="on" style="display:none" title="An update is available"></button>
 	<span class="spacer"></span>
 	<button id="bSettings">Settings</button>
 </header>
@@ -134,6 +135,7 @@ dialog::backdrop { background: #000a; }
 		<button data-tab="sections">Sections</button>
 		<button data-tab="inputs">Inputs</button>
 		<button data-tab="io">Export / import</button>
+		<button data-tab="about">About</button>
 		<span class="spacer"></span>
 		<button id="dlgClose">Close</button>
 	</div>
@@ -236,6 +238,10 @@ function render() {
 	$('#bPre').classList.toggle('on', showPre)
 	$('#bPost').classList.toggle('on', showPost)
 	$('#bFine').classList.toggle('on', fine)
+	const V = S.versions || {}
+	const upd = [V.moduleUpdate && 'Module ' + V.moduleLatest, V.obsUpdate && 'OBS ' + V.obsLatest].filter(Boolean)
+	$('#upd').style.display = upd.length ? '' : 'none'
+	$('#upd').textContent = 'Update: ' + upd.join(', ')
 	const rows = S.store.page.layout === 'rows'
 	const box = $('#strips')
 	box.classList.toggle('rows', rows)
@@ -538,6 +544,7 @@ $('#bPost').onclick = () => { showPost = !showPost; render() }
 $('#bFine').onclick = () => { fine = !fine; render() }
 $('#bSettings').onclick = () => { $('#dlg').showModal(); renderDialog(true) }
 $('#dlgClose').onclick = () => $('#dlg').close()
+$('#upd').onclick = () => { tab = 'about'; document.querySelectorAll('[data-tab]').forEach((x) => x.classList.toggle('on', x.dataset.tab === 'about')); $('#dlg').showModal(); renderDialog(true) }
 document.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => {
 	tab = b.dataset.tab
 	document.querySelectorAll('[data-tab]').forEach((x) => x.classList.toggle('on', x === b))
@@ -611,6 +618,16 @@ function renderDialog(force) {
 		body.querySelectorAll('[data-isec]').forEach((s) => s.addEventListener('change', () => cmd({ cmd: 'inputSection', input: s.dataset.in, section: s.dataset.isec, mode: s.value || null })))
 	} else if (tab === 'io') {
 		drawIO()
+	} else if (tab === 'about') {
+		const V = S.versions || {}
+		const row = (label, now, latest, update, link, linkText) => `<div class="card"><h4>${label}</h4>
+			<div class="row"><label>This version</label><span class="val">${esc(now || 'unknown')}</span></div>
+			<div class="row"><label>Latest</label><span class="val">${esc(latest || 'not known yet')}</span></div>
+			<p class="help">${update ? '<b>A newer version is out.</b>' : latest ? 'Up to date.' : ''}</p>
+			<div class="btns"><a href="${link}" target="_blank" rel="noopener"><button class="${update ? 'on' : ''}">${linkText}</button></a></div></div>`
+		body.innerHTML = row('OBS Audio module', V.moduleVersion, V.moduleLatest, V.moduleUpdate, V.moduleDownload, 'Download the latest module') +
+			row('OBS Studio', V.obsVersion, V.obsLatest, V.obsUpdate, V.obsDownload, 'Download the latest OBS') +
+			`<p class="help">${V.checkedAt ? 'Last checked ' + new Date(V.checkedAt).toLocaleString() + '.' : 'Not checked yet.'} ${V.error ? esc(V.error) : ''} How often it checks is in the Companion connection's settings. The module is installed in Companion with Modules → Import module package.</p>`
 	}
 }
 
