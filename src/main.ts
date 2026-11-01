@@ -10,7 +10,7 @@ import {
 	type CompanionVariableDefinition,
 	type CompanionVariableValues,
 	type DropdownChoice,
-	type SomeCompanionActionInputField,
+	type CompanionInputFieldTextInput,
 	type SomeCompanionConfigField,
 } from '@companion-module/base'
 import { Engine, type InputInfo, type MonitorType } from './engine.js'
@@ -39,7 +39,7 @@ type Ctx = Pick<CompanionActionContext, 'parseVariablesInString'>
 
 const INPUT_TIP = 'The OBS input name, or its number in the list (1 = first). Can be a variable.'
 
-const inputOption: SomeCompanionActionInputField = {
+const inputOption: CompanionInputFieldTextInput = {
 	type: 'textinput',
 	label: 'Input (name or number)',
 	id: 'input',
