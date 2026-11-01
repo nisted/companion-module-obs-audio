@@ -1,0 +1,15 @@
+{
+	"extends": "@companion-module/tools/tsconfig/node22/recommended-esm.json",
+	"include": ["src/**/*.ts"],
+	"exclude": ["node_modules/**", "test/**"],
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": "./src",
+		"paths": {
+			"*": ["./node_modules/*"]
+		},
+		"lib": ["ES2024"],
+		"types": ["node"],
+		"noUnusedLocals": false
+	}
+}

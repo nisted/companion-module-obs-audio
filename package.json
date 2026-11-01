@@ -1,0 +1,36 @@
+{
+	"name": "obs-audio",
+	"version": "0.1.0",
+	"type": "module",
+	"main": "dist/main.js",
+	"scripts": {
+		"build": "node scripts/embed-page.mjs && rimraf dist && tsc -p tsconfig.build.json",
+		"package": "run build && companion-module-build",
+		"dev": "tsc -p tsconfig.build.json --watch",
+		"check-types": "node scripts/embed-page.mjs && tsc -p tsconfig.json --noEmit",
+		"test": "node scripts/test.mjs"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/nisted/companion-module-obs-audio.git"
+	},
+	"engines": {
+		"node": "^22.11",
+		"yarn": "^4"
+	},
+	"dependencies": {
+		"@companion-module/base": "~1.11.3"
+	},
+	"devDependencies": {
+		"@companion-module/tools": "^2.6.1",
+		"@types/node": "^22.15.18",
+		"@types/ws": "^8.18.1",
+		"esbuild": "^0.25.0",
+		"rimraf": "^6.0.1",
+		"typescript": "~5.9.3",
+		"ws": "^8.18.0"
+	},
+	"prettier": "@companion-module/tools/.prettierrc.json",
+	"packageManager": "yarn@4.13.0"
+}

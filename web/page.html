@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>OBS Audio</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+	--bg: #0d0b14; --panel: #17131f; --panel2: #201a2c; --line: #2e2640; --text: #e8e2f4; --dim: #9a90ad;
+	--accent: #8b5cf6; --accent2: #5500aa; --red: #ff3b3b; --green: #2ecc40; --amber: #ffb000;
+	--strip-w: 168px; --fh: clamp(150px, 38vh, 340px);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; height: 100%; }
+body { display: flex; flex-direction: column; overscroll-behavior: none; }
+button, select, input { font: inherit; color: inherit; }
+button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; cursor: pointer; touch-action: manipulation; }
+button:hover { border-color: var(--accent); }
+button.on { background: var(--accent2); border-color: var(--accent); }
+button.danger.on, button.mute.on { background: #7a1020; border-color: var(--red); }
+select, input[type=number], input[type=text] { background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 5px; min-width: 0; }
+input[type=range] { accent-color: var(--accent); width: 100%; }
+header { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header h1 { font-size: 14px; margin: 0 8px 0 0; letter-spacing: .04em; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); display: inline-block; }
+.dot.ok { background: var(--green); }
+.spacer { flex: 1; }
+#msg { color: var(--amber); font-size: 12px; }
+main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
+#strips { display: flex; gap: 8px; align-items: stretch; height: 100%; }
+#strips.rows { height: auto; }
+#strips.rows { flex-direction: column; align-items: stretch; }
+.strip { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; width: var(--strip-w); flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
+.rows .strip { width: auto; flex-direction: row; align-items: stretch; }
+.strip .name { flex: 0 0 auto; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: var(--panel2); border-radius: 10px 10px 0 0; }
+.rows .strip .name { width: 140px; border-bottom: 0; border-right: 1px solid var(--line); border-radius: 10px 0 0 10px; display: flex; align-items: center; }
+.sections { display: flex; flex-direction: column; flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+.rows .sections { flex-direction: row; flex-wrap: wrap; flex: 1; align-content: flex-start; overflow: visible; }
+.sec { border-bottom: 1px solid var(--line); }
+.rows .sec { border-bottom: 0; border-right: 1px solid var(--line); min-width: 160px; max-width: 280px; }
+.sec h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); padding: 5px 8px; display: flex; justify-content: space-between; }
+.sec.collapsible h3 { cursor: pointer; }
+.sec.collapsible h3::after { content: '▾'; }
+.sec.collapsed h3::after { content: '▸'; }
+.sec.collapsed .body { display: none; }
+.sec .body { padding: 2px 8px 8px; display: flex; flex-direction: column; gap: 5px; }
+.row { display: flex; align-items: center; gap: 5px; justify-content: space-between; }
+.row label { color: var(--dim); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .val { font-variant-numeric: tabular-nums; font-size: 12px; min-width: 44px; text-align: right; }
+.row select, .row input[type=number], .row input[type=text] { width: 86px; }
+.ctl { display: flex; flex-direction: column; gap: 2px; }
+.filter { border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; display: flex; flex-direction: column; gap: 4px; }
+.filter .fhead { display: flex; gap: 4px; align-items: center; }
+.filter .fhead span { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter.off { opacity: .55; }
+.small { font-size: 11px; padding: 2px 6px; }
+.btns { display: flex; gap: 4px; flex-wrap: wrap; }
+.btns button { flex: 1; }
+.tracks { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; }
+.tracks button { padding: 4px 0; }
+.ovr { color: var(--accent); }
+.reset { background: none; border: 0; color: var(--accent); padding: 0 2px; }
+.fm { display: flex; gap: 6px; padding: 8px; justify-content: center; align-items: stretch; border-top: 1px solid var(--line); flex: 0 0 auto; }
+.rows .fm { flex-direction: column; min-width: 340px; flex: 0 0 360px; border-left: 1px solid var(--line); }
+.fader { position: relative; width: 44px; height: var(--fh); touch-action: none; cursor: ns-resize; }
+.rows .fader { width: 100%; height: 44px; cursor: ew-resize; }
+.fader .track { position: absolute; left: 50%; top: 10px; bottom: 10px; width: 6px; transform: translateX(-50%); background: #000; border-radius: 3px; border: 1px solid var(--line); }
+.rows .fader .track { left: 10px; right: 10px; top: 50%; bottom: auto; height: 6px; width: auto; transform: translateY(-50%); }
+.fader .scale { position: absolute; inset: 10px 0; pointer-events: none; }
+.rows .fader .scale { inset: 0 10px; }
+.fader .tick { position: absolute; left: 0; right: 0; height: 1px; background: #3a3150; }
+.fader .tick span { position: absolute; left: 0; font-size: 9px; color: var(--dim); transform: translateY(-50%); }
+.rows .fader .tick { top: 0; bottom: 0; width: 1px; height: auto; left: auto; right: auto; }
+.rows .fader .tick span { top: auto; bottom: 0; left: 0; transform: translateX(-50%); }
+.fader .cap { position: absolute; left: 4px; right: 4px; height: 20px; margin-top: -10px; background: linear-gradient(#3b2d57, #1e1630); border: 1px solid var(--accent); border-radius: 4px; box-shadow: 0 2px 4px #0008; }
+.fader .cap::after { content: ''; position: absolute; left: 3px; right: 3px; top: 50%; height: 2px; background: #fff; }
+.rows .fader .cap { top: 4px; bottom: 4px; width: 20px; height: auto; margin: 0 0 0 -10px; }
+.rows .fader .cap::after { top: 3px; bottom: 3px; left: 50%; width: 2px; height: auto; right: auto; }
+.fader.fine .cap { border-color: var(--amber); }
+.meters { display: flex; gap: 6px; }
+.rows .meters { flex-direction: column; }
+.meter { position: relative; width: 22px; height: var(--fh); display: flex; gap: 2px; padding: 10px 0; }
+.rows .meter { width: 100%; height: 22px; flex-direction: column; padding: 0 10px; }
+.meter .ch { position: relative; flex: 1; background: #050408; border-radius: 2px; overflow: hidden; }
+.meter .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 0; }
+.rows .meter .bar { top: 0; bottom: 0; left: 0; right: auto; width: 0; height: auto; }
+.meter .pk { position: absolute; left: 0; right: 0; height: 2px; background: #fff; bottom: 0; }
+.rows .meter .pk { top: 0; bottom: 0; width: 2px; height: auto; left: 0; }
+.meter .band { position: absolute; left: -2px; right: -2px; opacity: .35; pointer-events: none; }
+.rows .meter .band { top: -2px; bottom: -2px; left: auto; right: auto; }
+.meter .tgt { position: absolute; left: -3px; right: -3px; height: 2px; pointer-events: none; }
+.rows .meter .tgt { top: -3px; bottom: -3px; width: 2px; height: auto; left: auto; right: auto; }
+.meter .lbl { position: absolute; font-size: 9px; color: var(--dim); left: 50%; transform: translateX(-50%); bottom: -2px; }
+.rows .meter .lbl { display: none; }
+.readout { text-align: center; font-variant-numeric: tabular-nums; padding: 0 8px 6px; font-size: 12px; display: flex; justify-content: space-between; gap: 4px; }
+.rows .readout { flex-direction: column; justify-content: center; border-left: 1px solid var(--line); padding: 6px; min-width: 90px; }
+.rstate:empty { display: none; }
+.rstate { font-size: 11px; border-radius: 4px; padding: 1px 5px; background: var(--panel2); }
+.rstate.riding { background: #004f6b; } .rstate.holding { background: #2a1f45; } .rstate.limit { background: #6b4a00; } .rstate.frozen { background: #333; } .rstate.capturing, .rstate.calibrating { background: var(--accent2); }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--accent); border-radius: 12px; max-width: min(920px, 96vw); width: 96vw; max-height: 92vh; padding: 0; }
+dialog::backdrop { background: #000a; }
+.dlg-head { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.dlg-body { padding: 10px; overflow: auto; max-height: calc(92vh - 60px); }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 16px; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.card h4 { margin: 0 0 6px; }
+.card select { width: auto; min-width: 120px; }
+.addf { width: 100%; }
+.checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px 10px; }
+.checks label { display: flex; gap: 6px; align-items: center; }
+.empty { color: var(--dim); padding: 30px; text-align: center; }
+.help { color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+	<span class="dot" id="dot" title="OBS connection"></span>
+	<h1>OBS AUDIO</h1>
+	<button id="bPre" title="Pre-fader meters">PRE</button>
+	<button id="bPost" title="Post-fader meters">POST</button>
+	<button id="bFine" title="Fine fader moves while on (or drag with two fingers)">FINE</button>
+	<span id="msg"></span>
+	<span class="spacer"></span>
+	<button id="bSettings">Settings</button>
+</header>
+<main><div id="strips"></div><div class="empty" id="empty">Waiting for OBS…</div></main>
+
+<dialog id="dlg">
+	<div class="dlg-head">
+		<button data-tab="page" class="on">Page</button>
+		<button data-tab="defaults">Auto gain defaults</button>
+		<button data-tab="buttons">Buttons</button>
+		<button data-tab="sections">Sections</button>
+		<button data-tab="inputs">Inputs</button>
+		<button data-tab="io">Export / import</button>
+		<span class="spacer"></span>
+		<button id="dlgClose">Close</button>
+	</div>
+	<div class="dlg-body" id="dlgBody"></div>
+</dialog>
+
+<script>
+'use strict'
+const $ = (s, el = document) => el.querySelector(s)
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+let META = null
+let S = null // state snapshot
+let pin = localStorage.getItem('obsaudio.pin') || ''
+let fine = false
+let showPre = null, showPost = null
+const dragging = new Set()
+const peaks = {} // name -> {post:[{v,t}], pre:[...]}
+const strips = new Map() // name -> {el, sig}
+const collapsed = JSON.parse(localStorage.getItem('obsaudio.collapsed') || '{}')
+let es = null
+let tab = 'page'
+
+function q() { return pin ? '?pin=' + encodeURIComponent(pin) : '' }
+function flash(text) { const m = $('#msg'); m.textContent = text; clearTimeout(flash.t); flash.t = setTimeout(() => (m.textContent = ''), 4000) }
+
+async function cmd(c) {
+	try {
+		const r = await fetch('/cmd' + q(), { method: 'POST', body: JSON.stringify(c), headers: { 'Content-Type': 'application/json' } })
+		if (r.status === 401) return askPin()
+		const j = await r.json()
+		if (!j.ok) flash(j.error || 'Failed')
+		else if (j.message) flash(j.message)
+		return j
+	} catch (e) { flash('Lost the module') }
+}
+
+function askPin() {
+	const p = prompt('PIN for this page')
+	if (p === null) return
+	pin = p
+	localStorage.setItem('obsaudio.pin', pin)
+	connect()
+}
+
+// ---- fader law (same as the module's law.ts) ----
+const MIN_DB = -100
+const MARKS = [[0.03, -80], [0.08, -60], [0.15, -50], [0.25, -40], [0.35, -30], [0.45, -20], [0.55, -12], [0.65, -6], [0.75, 0]]
+function law() { const p = S.store.page; return { kind: p.law, top: p.faderTopDb, bottom: p.faderBottomDb } }
+function posToDb(pos) {
+	const L = law(), p = Math.max(0, Math.min(1, pos))
+	if (p <= 0) return null
+	if (L.kind === 'linear') return L.bottom + (L.top - L.bottom) * p
+	if (p >= 0.75) return L.top <= 0 ? 0 : ((p - 0.75) / 0.25) * L.top
+	if (p < MARKS[0][0]) return MIN_DB + ((MARKS[0][1] - MIN_DB) * p) / MARKS[0][0]
+	for (let i = 1; i < MARKS.length; i++) { const [p1, d1] = MARKS[i], [p0, d0] = MARKS[i - 1]; if (p <= p1) return d0 + ((d1 - d0) * (p - p0)) / (p1 - p0) }
+	return 0
+}
+function dbToPos(db) {
+	const L = law()
+	if (db === null || db <= MIN_DB) return 0
+	if (L.kind === 'linear') return db <= L.bottom ? 0 : Math.max(0, Math.min(1, (db - L.bottom) / (L.top - L.bottom)))
+	if (db >= 0) return L.top <= 0 ? 0.75 : Math.min(1, 0.75 + (db / L.top) * 0.25)
+	if (db <= MARKS[0][1]) return Math.max(0, ((db - MIN_DB) / (MARKS[0][1] - MIN_DB)) * MARKS[0][0])
+	for (let i = 1; i < MARKS.length; i++) { const [p1, d1] = MARKS[i], [pa, da] = MARKS[i - 1]; if (db <= d1) return pa + ((p1 - pa) * (db - da)) / (d1 - da) }
+	return 0.75
+}
+const fmt = (db, d = 1) => (db === null || db === undefined ? '-∞' : (db > 0 ? '+' : '') + db.toFixed(d))
+
+// ---- meter scale ----
+function mFrac(db) { const p = S.store.page; if (db === null || db === undefined) return 0; return Math.max(0, Math.min(1, (db - p.meterFloorDb) / (p.meterTopDb - p.meterFloorDb))) }
+function zoneGradient(rows) {
+	const p = S.store.page
+	const g = mFrac(p.greenToDb) * 100, y = mFrac(p.yellowToDb) * 100
+	const dir = rows ? 'to right' : 'to top'
+	return `linear-gradient(${dir}, ${p.greenColour} 0%, ${p.greenColour} ${g}%, ${p.yellowColour} ${g}%, ${p.yellowColour} ${y}%, ${p.redColour} ${y}%, ${p.redColour} 100%)`
+}
+
+// ---- live feed ----
+function connect() {
+	if (es) es.close()
+	es = new EventSource('/events' + q())
+	es.addEventListener('meta', (e) => { META = JSON.parse(e.data) })
+	es.addEventListener('state', (e) => { S = JSON.parse(e.data); render() })
+	es.addEventListener('meters', (e) => drawMeters(JSON.parse(e.data)))
+	es.onerror = async () => {
+		$('#dot').classList.remove('ok')
+		try { const r = await fetch('/events' + q(), { method: 'HEAD' }); if (r.status === 401) { es.close(); askPin() } } catch {}
+	}
+}
+
+// ---- rendering ----
+function sectionMode(inp, sec) { return inp.sections[sec.id] || sec.mode }
+
+function render() {
+	if (!S || !META) return
+	$('#dot').classList.toggle('ok', S.connected)
+	document.documentElement.style.setProperty('--accent', S.store.page.accentColour)
+	if (showPre === null) showPre = S.store.page.showPre
+	if (showPost === null) showPost = S.store.page.showPost
+	$('#bPre').classList.toggle('on', showPre)
+	$('#bPost').classList.toggle('on', showPost)
+	$('#bFine').classList.toggle('on', fine)
+	const rows = S.store.page.layout === 'rows'
+	const box = $('#strips')
+	box.classList.toggle('rows', rows)
+	const list = S.inputs.filter((i) => !i.hidden)
+	$('#empty').style.display = list.length ? 'none' : ''
+	$('#empty').textContent = S.connected ? 'No audio inputs in OBS' : 'Waiting for OBS…'
+	const names = new Set(list.map((i) => i.name))
+	for (const [n, s] of strips) if (!names.has(n)) { s.el.remove(); strips.delete(n) }
+	let prev = null
+	for (const inp of list) {
+		let s = strips.get(inp.name)
+		const layoutSig = JSON.stringify([rows, showPre, showPost, inp.channels, S.store.page])
+		if (!s || s.layoutSig !== layoutSig) {
+			const el = buildStrip(inp, rows)
+			if (s) s.el.replaceWith(el)
+			s = { el, sig: '', layoutSig }
+			strips.set(inp.name, s)
+		}
+		if (prev ? prev.nextSibling !== s.el : box.firstChild !== s.el) box.insertBefore(s.el, prev ? prev.nextSibling : box.firstChild)
+		prev = s.el
+		updateStrip(s, inp)
+	}
+	if ($('#dlg').open) renderDialog(false)
+}
+
+function buildStrip(inp, rows) {
+	const el = document.createElement('div')
+	el.className = 'strip'
+	el.dataset.name = inp.name
+	const meterHtml = (cls, label) => `<div class="meter ${cls}"><span class="lbl">${label}</span>${Array.from({ length: Math.max(1, Math.min(inp.channels, 8)) }, () => `<div class="ch"><div class="bar"></div><div class="pk"></div></div>`).join('')}<div class="band"></div><div class="tgt"></div></div>`
+	el.innerHTML = `<div class="name" title="${esc(inp.name)}">${esc(inp.name)}</div><div class="sections"></div>
+		<div class="fm"><div class="meters">${showPre ? meterHtml('pre', 'PRE') : ''}${showPost ? meterHtml('post', 'POST') : ''}</div><div class="fader"><div class="track"></div><div class="scale"></div><div class="cap"></div></div></div>
+		<div class="readout"><span class="vol"></span><span class="rstate"></span><span class="lvl"></span></div>`
+	for (const bar of el.querySelectorAll('.bar')) bar.style.background = zoneGradient(rows)
+	const scale = $('.scale', el)
+	for (const db of [10, 5, 0, -5, -10, -20, -30, -40, -60]) {
+		if (db > S.store.page.faderTopDb) continue
+		const p = dbToPos(db)
+		const t = document.createElement('div')
+		t.className = 'tick'
+		if (rows) t.style.left = p * 100 + '%'
+		else t.style.top = (1 - p) * 100 + '%'
+		t.innerHTML = `<span>${db > 0 ? '+' + db : db}</span>`
+		scale.appendChild(t)
+	}
+	attachFader($('.fader', el), inp.name, rows)
+	el.addEventListener('click', (e) => {
+		const h = e.target.closest('.sec.collapsible h3')
+		if (!h) return
+		const sec = h.parentElement
+		sec.classList.toggle('collapsed')
+		collapsed[inp.name + '/' + sec.dataset.id] = sec.classList.contains('collapsed')
+		localStorage.setItem('obsaudio.collapsed', JSON.stringify(collapsed))
+	})
+	return el
+}
+
+function updateStrip(s, inp) {
+	const el = s.el
+	const rows = S.store.page.layout === 'rows'
+	const focused = el.contains(document.activeElement) && document.activeElement !== document.body
+	const sig = JSON.stringify([inp.filters, inp.overrides, inp.sections, inp.settings, inp.tracks, inp.monitor, inp.muted, inp.balance, inp.syncMs, inp.hasTrim, inp.target, S.store.sections, S.store.defaults, S.store.moduleCalibrateDb])
+	if (sig !== s.sig && !focused && !el.querySelector('input[type=range]:active')) {
+		s.sig = sig
+		$('.sections', el).innerHTML = S.store.sections
+			.filter((sec) => sectionMode(inp, sec) !== 'hidden' && sec.controls.length)
+			.map((sec) => {
+				const mode = sectionMode(inp, sec)
+				const isCol = mode === 'collapsible' && (collapsed[inp.name + '/' + sec.id] ?? true)
+				const kinds = META.filterKinds.filter((k) => sec.controls.includes(k.kind))
+				const add = kinds.length ? `<select class="addf" data-a="fadd"><option value="">+ Add…</option>${kinds.map((k) => `<option value="${k.kind}">${esc(k.label)}</option>`).join('')}</select>` : ''
+				return `<div class="sec ${mode === 'collapsible' ? 'collapsible' : ''} ${isCol ? 'collapsed' : ''}" data-id="${esc(sec.id)}"><h3>${esc(sec.name)}</h3><div class="body">${sec.controls.map((c) => control(inp, c)).join('')}${add}</div></div>`
+			})
+			.join('')
+		wire(el, inp.name)
+	}
+	// fast-changing values, updated in place
+	if (!dragging.has(inp.name)) setCap(el, dbToPos(inp.volumeDb), rows)
+	$('.vol', el).textContent = fmt(inp.volumeDb) + ' dB'
+	const rs = $('.rstate', el)
+	rs.className = 'rstate ' + inp.rider
+	rs.textContent = inp.rider === 'off' ? (inp.settings.riderOn ? 'no target' : '') : inp.rider
+	for (const t of el.querySelectorAll('[data-live=trim]')) if (document.activeElement !== t) t.value = inp.trimDb
+	for (const t of el.querySelectorAll('[data-live=trimv]')) t.textContent = fmt(inp.trimDb)
+	for (const t of el.querySelectorAll('[data-live=target]')) t.textContent = inp.target === null ? 'none' : fmt(inp.target) + ' dB'
+	for (const t of el.querySelectorAll('[data-live=state]')) t.textContent = inp.rider
+	// target and band on the meter at the measuring point
+	const p = S.store.page
+	const meter = $(inp.settings.controlMode === 'trim' ? '.meter.pre' : '.meter.post', el)
+	for (const m of el.querySelectorAll('.meter')) { $('.band', m).style.display = 'none'; $('.tgt', m).style.display = 'none' }
+	if (meter && inp.target !== null) {
+		const band = $('.band', meter), tgt = $('.tgt', meter)
+		const lo = mFrac(inp.target - inp.settings.bandDb), hi = mFrac(inp.target + inp.settings.bandDb), t = mFrac(inp.target)
+		band.style.display = tgt.style.display = ''
+		band.style.background = inp.rider === 'riding' ? p.ridingColour : p.bandColour
+		tgt.style.background = p.targetColour
+		if (rows) {
+			const pad = 10, w = meter.clientWidth - 2 * pad
+			band.style.left = pad + lo * w + 'px'; band.style.width = (hi - lo) * w + 'px'
+			tgt.style.left = pad + t * w - 1 + 'px'
+		} else {
+			const pad = 10, h = meter.clientHeight - 2 * pad
+			band.style.bottom = pad + lo * h + 'px'; band.style.height = (hi - lo) * h + 'px'
+			tgt.style.bottom = pad + t * h - 1 + 'px'
+		}
+	}
+}
+
+function setCap(el, pos, rows) {
+	const cap = $('.cap', el)
+	if (rows) cap.style.left = `calc(10px + (100% - 20px) * ${pos})`
+	else cap.style.top = `calc(10px + (100% - 20px) * ${1 - pos})`
+}
+
+// ---- controls inside sections ----
+function num(id, value, min, max, step, extra = '') { return `<input type="number" ${extra} data-k="${id}" value="${value}" min="${min}" max="${max}" step="${step}">` }
+
+function control(inp, c) {
+	const n = esc(inp.name)
+	switch (c) {
+		case 'mute': return `<div class="btns"><button class="mute ${inp.muted ? 'on' : ''}" data-a="mute">${inp.muted ? 'MUTED' : 'Mute'}</button></div>`
+		case 'monitor': return `<div class="row"><label>Monitor</label><select data-a="monitor">${[['none', 'Off'], ['monitor', 'Monitor only'], ['both', 'Monitor + output']].map(([v, l]) => `<option value="${v}" ${inp.monitor === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`
+		case 'balance': return `<div class="ctl"><div class="row"><label>Balance</label><span class="val">${balText(inp.balance)}</span></div><input type="range" data-a="balance" min="0" max="1" step="0.01" value="${inp.balance}"></div>`
+		case 'sync': return `<div class="row"><label>Sync offset (ms)</label>${num('', inp.syncMs, -950, 20000, 1, 'data-a="sync"')}</div>`
+		case 'trim': return `<div class="ctl"><div class="row"><label>Trim${inp.hasTrim ? '' : ' (not added yet)'}</label><span class="val" data-live="trimv">${fmt(inp.trimDb)}</span></div><input type="range" data-a="trim" data-live="trim" min="-30" max="30" step="0.1" value="${inp.trimDb}"></div>`
+		case 'tracks': return `<div class="tracks">${[1, 2, 3, 4, 5, 6].map((t) => `<button class="${inp.tracks[t] ? 'on' : ''}" data-a="track" data-t="${t}">${t}</button>`).join('')}</div>`
+		case 'autogain_buttons': return `<div class="btns"><button class="${inp.settings.riderOn ? 'on' : ''}" data-a="rider">Rider ${inp.settings.riderOn ? 'ON' : 'off'}</button><button data-a="capture" title="This level please">This level</button></div><div class="btns"><button data-a="cal" data-l="input" title="Calibrate to this input's level">Cal ${fmt(inp.settings.calibrateDb, 0)}</button><button data-a="cal" data-l="module" title="Calibrate to the module default">Cal ${fmt(S.store.moduleCalibrateDb, 0)}</button></div>`
+		case 'autogain_target': return `<div class="row"><label>Target</label><span class="val" data-live="target">${inp.target === null ? 'none' : fmt(inp.target) + ' dB'}</span></div><div class="row"><label>Set target</label>${num('', inp.target === null ? '' : Math.round(inp.target * 10) / 10, -100, 26, 0.5, 'data-a="target" placeholder="dB"')}</div><div class="row"><label>Status</label><span class="val" data-live="state">${inp.rider}</span></div>`
+		case 'autogain_settings': return settingsFields(inp)
+		default: {
+			const kind = META.filterKinds.find((k) => k.kind === c)
+			if (!kind) return ''
+			const trimName = inp.settings.trimFilterName
+			const fs = inp.filters.filter((f) => f.kind === c && !(c === 'gain_filter' && f.name === trimName))
+			return fs.map((f) => filterBox(f, kind)).join('')
+		}
+	}
+}
+
+function balText(b) { const v = Math.round((b - 0.5) * 200); return v === 0 ? 'C' : v < 0 ? 'L' + -v : 'R' + v }
+
+function filterBox(f, kind) {
+	const fn = esc(f.name)
+	const params = kind.params.map((p) => {
+		const v = f.settings[p.key] ?? p.default
+		if (p.type === 'choice') return `<div class="row"><label>${esc(p.label)}</label><select data-a="fset" data-f="${fn}" data-key="${p.key}">${p.choices.map((c) => `<option value="${esc(c.id)}" ${String(v) === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select></div>`
+		if (p.type === 'text') return `<div class="row"><label>${esc(p.label)}</label><input type="text" data-a="fset" data-f="${fn}" data-key="${p.key}" value="${esc(v)}"></div>`
+		return `<div class="ctl"><div class="row"><label>${esc(p.label)}</label><span class="val">${Number(v).toFixed(p.step < 1 ? (p.step < 0.1 ? 2 : 1) : 0)}${p.unit ? ' ' + esc(p.unit) : ''}</span></div><input type="range" data-a="fset" data-num="1" data-f="${fn}" data-key="${p.key}" min="${p.min}" max="${p.max}" step="${p.step}" value="${v}"></div>`
+	}).join('')
+	return `<div class="filter ${f.enabled ? '' : 'off'}"><div class="fhead"><span title="${fn}">${fn}</span><button class="small ${f.enabled ? 'on' : ''}" data-a="fon" data-f="${fn}">${f.enabled ? 'ON' : 'off'}</button><button class="small" data-a="fdel" data-f="${fn}" title="Remove">✕</button></div>${params}</div>`
+}
+
+function fieldInput(key, field, value, attrs) {
+	if (field.type === 'bool') return `<select ${attrs}><option value="true" ${value ? 'selected' : ''}>On</option><option value="false" ${!value ? 'selected' : ''}>Off</option></select>`
+	if (field.type === 'choice') return `<select ${attrs}>${field.choices.map((c) => `<option value="${c.id}" ${value === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select>`
+	if (field.type === 'text') return `<input type="text" ${attrs} value="${esc(value)}">`
+	return `<input type="number" ${attrs} value="${value}" min="${field.min}" max="${field.max}" step="${field.step}">`
+}
+
+function settingsFields(inp) {
+	return Object.entries(META.inputFields).filter(([k]) => k !== 'riderOn').map(([k, f]) => {
+		const ovr = k in inp.overrides
+		return `<div class="row" title="${esc(f.help || '')}"><label class="${ovr ? 'ovr' : ''}">${esc(f.label)}${f.unit ? ' (' + esc(f.unit) + ')' : ''}</label>${ovr ? `<button class="reset" data-a="sreset" data-key="${k}" title="Back to the default">↺</button>` : ''}${fieldInput(k, f, inp.settings[k], `data-a="sset" data-key="${k}"`)}</div>`
+	}).join('')
+}
+
+function wire(el, name) {
+	const on = (sel, ev, fn) => el.querySelectorAll(sel).forEach((x) => x.addEventListener(ev, (e) => fn(x, e)))
+	const inp = () => S.inputs.find((i) => i.name === name)
+	on('[data-a=mute]', 'click', () => cmd({ cmd: 'mute', input: name, value: !inp().muted }))
+	on('[data-a=monitor]', 'change', (x) => cmd({ cmd: 'monitor', input: name, value: x.value }))
+	on('[data-a=balance]', 'input', throttle((x) => { x.previousElementSibling.querySelector('.val').textContent = balText(+x.value); cmd({ cmd: 'balance', input: name, value: +x.value }) }))
+	on('[data-a=sync]', 'change', (x) => cmd({ cmd: 'sync', input: name, value: +x.value }))
+	on('[data-a=trim]', 'input', throttle((x) => cmd({ cmd: 'trim', input: name, value: +x.value })))
+	on('[data-a=track]', 'click', (x) => cmd({ cmd: 'track', input: name, track: x.dataset.t, value: !inp().tracks[x.dataset.t] }))
+	on('[data-a=rider]', 'click', () => cmd({ cmd: 'rider', input: name, value: !inp().settings.riderOn }))
+	on('[data-a=capture]', 'click', () => cmd({ cmd: 'capture', input: name }))
+	on('[data-a=cal]', 'click', (x) => cmd({ cmd: 'calibrate', input: name, level: x.dataset.l }))
+	on('[data-a=target]', 'change', (x) => cmd({ cmd: 'setTarget', input: name, value: x.value }))
+	on('[data-a=fadd]', 'change', (x) => { if (x.value) cmd({ cmd: 'filterAdd', input: name, kind: x.value }); x.value = '' })
+	on('[data-a=fdel]', 'click', (x) => { if (confirm(`Remove ${x.dataset.f}?`)) cmd({ cmd: 'filterRemove', input: name, filter: x.dataset.f }) })
+	on('[data-a=fon]', 'click', (x) => cmd({ cmd: 'filterEnable', input: name, filter: x.dataset.f, value: !x.classList.contains('on') }))
+	on('[data-a=fset]', 'input', throttle((x) => {
+		const value = x.dataset.num ? +x.value : x.value
+		if (x.dataset.num) { const v = x.previousElementSibling.querySelector('.val'); v.textContent = v.textContent.replace(/^[-\d.]+/, String(+x.value)) }
+		cmd({ cmd: 'filterSet', input: name, filter: x.dataset.f, key: x.dataset.key, value })
+	}))
+	on('[data-a=sset]', 'change', (x) => cmd({ cmd: 'inputSetting', input: name, key: x.dataset.key, value: x.value }))
+	on('[data-a=sreset]', 'click', (x) => cmd({ cmd: 'inputSetting', input: name, key: x.dataset.key, value: null }))
+}
+
+function throttle(fn, ms = 40) {
+	let last = 0, timer = null, args = null
+	return (...a) => {
+		args = a
+		const now = Date.now()
+		if (now - last >= ms) { last = now; fn(...args) }
+		else if (!timer) timer = setTimeout(() => { timer = null; last = Date.now(); fn(...args) }, ms - (now - last))
+	}
+}
+
+// ---- the fader ----
+function attachFader(f, name, rows) {
+	const pointers = new Map()
+	let startPos = 0, startCoord = 0, lastTap = 0, moved = false
+	const send = throttle((db) => cmd({ cmd: 'volume', input: name, db }), 33)
+	const coord = (e) => (rows ? e.clientX : -e.clientY)
+	const len = () => (rows ? f.clientWidth : f.clientHeight) - 20
+	f.addEventListener('pointerdown', (e) => {
+		e.preventDefault()
+		f.setPointerCapture(e.pointerId)
+		pointers.set(e.pointerId, coord(e))
+		if (pointers.size > 1) { f.classList.add('fine'); return }
+		const inp = S.inputs.find((i) => i.name === name)
+		const now = Date.now()
+		if (S.store.page.doubleTapUnity && now - lastTap < 300) {
+			lastTap = 0
+			setCap(f.parentElement.parentElement, dbToPos(0), rows)
+			cmd({ cmd: 'volume', input: name, db: 0 })
+			return
+		}
+		lastTap = now
+		moved = false
+		dragging.add(name)
+		startPos = dbToPos(inp.volumeDb)
+		startCoord = coord(e)
+		cmd({ cmd: 'touch', input: name, value: true })
+	})
+	f.addEventListener('pointermove', (e) => {
+		if (!pointers.has(e.pointerId) || !dragging.has(name)) return
+		const c = coord(e)
+		const isFine = fine || pointers.size > 1
+		f.classList.toggle('fine', isFine)
+		const delta = (c - startCoord) / len()
+		if (Math.abs(c - startCoord) > 3) moved = true
+		const pos = Math.max(0, Math.min(1, startPos + delta * (isFine ? S.store.page.fineRatio : 1)))
+		// keep fine mode relative: re-anchor each move
+		startPos = pos
+		startCoord = c
+		setCap(f.parentElement.parentElement, pos, rows)
+		const db = posToDb(pos)
+		send(db === null ? null : Math.round(db * 10) / 10)
+	})
+	const end = (e) => {
+		pointers.delete(e.pointerId)
+		if (pointers.size) return
+		f.classList.toggle('fine', fine)
+		if (dragging.has(name)) {
+			dragging.delete(name)
+			cmd({ cmd: 'touch', input: name, value: false })
+		}
+		if (moved) lastTap = 0
+	}
+	f.addEventListener('pointerup', end)
+	f.addEventListener('pointercancel', end)
+}
+
+// ---- meters ----
+function drawMeters(frame) {
+	if (!S) return
+	const p = S.store.page
+	const now = Date.now()
+	const rows = p.layout === 'rows'
+	for (const [name, s] of strips) {
+		const m = frame[name]
+		if (!m) continue
+		const [post, pre, level] = m
+		const pk = (peaks[name] ??= { post: [], pre: [] })
+		const draw = (cls, vals, hold) => {
+			const meter = $('.meter.' + cls, s.el)
+			if (!meter) return
+			meter.querySelectorAll('.ch').forEach((ch, i) => {
+				const v = vals[i] ?? vals[0] ?? null
+				const f = mFrac(v)
+				const bar = ch.firstChild
+				if (rows) { bar.style.width = f * 100 + '%'; bar.style.backgroundSize = (f > 0 ? 100 / f : 100) + '% 100%' }
+				else { bar.style.height = f * 100 + '%'; bar.style.backgroundSize = '100% ' + (f > 0 ? 100 / f : 100) + '%'; bar.style.backgroundPosition = 'bottom' }
+				const h = (hold[i] ??= { v: -999, t: 0 })
+				const fv = v === null ? -999 : v
+				if (fv >= h.v) { h.v = fv; h.t = now }
+				else if (now - h.t > p.peakHoldMs) h.v = Math.max(fv, h.v - (p.peakFallDbPerS * (now - (h.last || now))) / 1000)
+				h.last = now
+				const pf = mFrac(h.v < -900 ? null : h.v)
+				const pkEl = ch.lastChild
+				if (rows) pkEl.style.left = `calc(${pf * 100}% - 2px)`
+				else pkEl.style.bottom = `calc(${pf * 100}% - 2px)`
+				pkEl.style.display = pf > 0 ? '' : 'none'
+			})
+		}
+		draw('post', post, pk.post)
+		draw('pre', pre, pk.pre)
+		const lv = $('.lvl', s.el)
+		if (lv) lv.textContent = level === null ? '' : fmt(level)
+	}
+}
+
+// ---- header ----
+$('#bPre').onclick = () => { showPre = !showPre; render() }
+$('#bPost').onclick = () => { showPost = !showPost; render() }
+$('#bFine').onclick = () => { fine = !fine; render() }
+$('#bSettings').onclick = () => { $('#dlg').showModal(); renderDialog(true) }
+$('#dlgClose').onclick = () => $('#dlg').close()
+document.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => {
+	tab = b.dataset.tab
+	document.querySelectorAll('[data-tab]').forEach((x) => x.classList.toggle('on', x === b))
+	renderDialog(true)
+}))
+
+// ---- settings dialog ----
+let sectionsDraft = null
+let importFile = null
+
+const PAGE_FIELDS = [
+	['layout', 'Layout', 'choice', [['strips', 'Vertical strips'], ['rows', 'Horizontal rows']]],
+	['law', 'Fader law', 'choice', [['desk', 'Desk'], ['linear', 'Linear dB']]],
+	['faderTopDb', 'Fader top (dB)', 'number'], ['faderBottomDb', 'Fader bottom, linear law (dB)', 'number'],
+	['meterFloorDb', 'Meter floor (dB)', 'number'], ['meterTopDb', 'Meter top (dB)', 'number'],
+	['showPre', 'Pre-fader meters on at start', 'bool'], ['showPost', 'Post-fader meters on at start', 'bool'],
+	['peakHoldMs', 'Peak hold (ms)', 'number'], ['peakFallDbPerS', 'Peak fall (dB/s)', 'number'],
+	['greenToDb', 'Green up to (dB)', 'number'], ['yellowToDb', 'Yellow up to (dB)', 'number'],
+	['greenColour', 'Green colour', 'color'], ['yellowColour', 'Yellow colour', 'color'], ['redColour', 'Red colour', 'color'],
+	['bandColour', 'Rider band colour', 'color'], ['ridingColour', 'Band colour while riding', 'color'], ['targetColour', 'Target line colour', 'color'],
+	['accentColour', 'Accent colour', 'color'],
+	['meterRateHz', 'Meter updates per second', 'number'], ['fineRatio', 'Fine mode ratio', 'number'], ['doubleTapUnity', 'Double-tap fader for 0 dB', 'bool'],
+]
+
+function renderDialog(force) {
+	const body = $('#dlgBody')
+	if (!force && body.contains(document.activeElement) && document.activeElement !== body) return
+	if (!force && (tab === 'sections' || tab === 'io')) return
+	const st = S.store
+	if (tab === 'page') {
+		body.innerHTML = `<div class="grid2">${PAGE_FIELDS.map(([k, l, t, ch]) => {
+			const v = st.page[k]
+			let ctl
+			if (t === 'choice') ctl = `<select data-p="${k}">${ch.map(([id, lab]) => `<option value="${id}" ${v === id ? 'selected' : ''}>${lab}</option>`).join('')}</select>`
+			else if (t === 'bool') ctl = `<select data-p="${k}"><option value="true" ${v ? 'selected' : ''}>Yes</option><option value="false" ${!v ? 'selected' : ''}>No</option></select>`
+			else if (t === 'color') ctl = `<input type="color" data-p="${k}" value="${v}">`
+			else ctl = `<input type="number" data-p="${k}" value="${v}" step="any">`
+			return `<div class="row"><label>${l}</label>${ctl}</div>`
+		}).join('')}</div>`
+		body.querySelectorAll('[data-p]').forEach((x) => x.addEventListener('change', () => cmd({ cmd: 'page', key: x.dataset.p, value: x.value })))
+	} else if (tab === 'defaults') {
+		body.innerHTML = `<p class="help">Every input starts from these. An input's own changes (purple in its strip) override them.</p><div class="grid2">${Object.entries(META.inputFields).map(([k, f]) => `<div class="row" title="${esc(f.help || '')}"><label>${esc(f.label)}${f.unit ? ' (' + esc(f.unit) + ')' : ''}</label>${fieldInput(k, f, st.defaults[k], `data-d="${k}"`)}</div>`).join('')}</div>`
+		body.querySelectorAll('[data-d]').forEach((x) => x.addEventListener('change', () => cmd({ cmd: 'defaultSetting', key: x.dataset.d, value: x.value })))
+	} else if (tab === 'buttons') {
+		body.innerHTML = `<p class="help">The auto gain button on each input: <b>press</b> = this level please, <b>double tap</b> = calibrate to the input's own level, <b>press and hold</b> = calibrate to the module level below.</p>
+			<div class="grid2"><div class="row"><label>Double-tap window (ms)</label><input type="number" data-g="doubleTapMs" value="${st.gestures.doubleTapMs}"></div>
+			<div class="row"><label>Hold time (ms)</label><input type="number" data-g="holdMs" value="${st.gestures.holdMs}"></div>
+			<div class="row"><label>Module calibrate level (dB)</label><input type="number" step="0.5" data-g="moduleCalibrateDb" value="${st.moduleCalibrateDb}"></div></div>`
+		body.querySelectorAll('[data-g]').forEach((x) => x.addEventListener('change', () => cmd({ cmd: 'gestures', [x.dataset.g]: x.value })))
+	} else if (tab === 'sections') {
+		sectionsDraft = JSON.parse(JSON.stringify(st.sections))
+		drawSections()
+	} else if (tab === 'inputs') {
+		const all = S.inputs
+		body.innerHTML = `<p class="help">Order, hide, and each input's own section choices (blank = the section's default).</p>` + all.map((inp, i) => `<div class="card"><div class="row"><b style="flex:1">${esc(inp.name)}</b>
+			<button class="small" data-up="${i}">▲</button><button class="small" data-down="${i}">▼</button>
+			<label style="flex:0"><input type="checkbox" data-hide="${esc(inp.name)}" ${inp.hidden ? 'checked' : ''}> Hidden</label></div>
+			<div class="grid2">${st.sections.map((sec) => `<div class="row"><label>${esc(sec.name)}</label><select data-isec="${esc(sec.id)}" data-in="${esc(inp.name)}"><option value="">Default (${sec.mode})</option>${['hidden', 'open', 'collapsible'].map((m) => `<option value="${m}" ${inp.sections[sec.id] === m ? 'selected' : ''}>${m}</option>`).join('')}</select></div>`).join('')}</div></div>`).join('')
+		const order = () => S.inputs.map((x) => x.name)
+		const hidden = () => S.inputs.filter((x) => x.hidden).map((x) => x.name)
+		body.querySelectorAll('[data-up],[data-down]').forEach((b) => b.addEventListener('click', () => {
+			const o = order(), i = +(b.dataset.up ?? b.dataset.down), j = b.dataset.up !== undefined ? i - 1 : i + 1
+			if (j < 0 || j >= o.length) return
+			;[o[i], o[j]] = [o[j], o[i]]
+			cmd({ cmd: 'order', order: o, hidden: hidden() })
+		}))
+		body.querySelectorAll('[data-hide]').forEach((c) => c.addEventListener('change', () => {
+			const h = new Set(hidden()); if (c.checked) h.add(c.dataset.hide); else h.delete(c.dataset.hide)
+			cmd({ cmd: 'order', order: order(), hidden: [...h] })
+		}))
+		body.querySelectorAll('[data-isec]').forEach((s) => s.addEventListener('change', () => cmd({ cmd: 'inputSection', input: s.dataset.in, section: s.dataset.isec, mode: s.value || null })))
+	} else if (tab === 'io') {
+		drawIO()
+	}
+}
+
+function drawSections() {
+	const body = $('#dlgBody')
+	body.innerHTML = `<p class="help">Sections run top to bottom in each strip (left to right in rows). Tick what goes in each. The fader and meters always show. Save when done.</p>` +
+		sectionsDraft.map((sec, i) => `<div class="card"><div class="row"><input type="text" data-sn="${i}" value="${esc(sec.name)}" style="flex:1;width:auto">
+		<select data-sm="${i}">${['hidden', 'open', 'collapsible'].map((m) => `<option value="${m}" ${sec.mode === m ? 'selected' : ''}>${m === 'open' ? 'Always open' : m === 'hidden' ? 'Hidden' : 'Collapsible'}</option>`).join('')}</select>
+		<button class="small" data-su="${i}">▲</button><button class="small" data-sd="${i}">▼</button><button class="small" data-sx="${i}">✕</button></div>
+		<div class="checks">${META.controls.map((c) => `<label><input type="checkbox" data-sc="${i}" value="${c.id}" ${sec.controls.includes(c.id) ? 'checked' : ''}>${esc(c.label)}</label>`).join('')}</div></div>`).join('') +
+		`<div class="btns"><button id="sAdd">+ Section</button><button id="sSave" class="on">Save sections</button></div>`
+	body.querySelectorAll('[data-sn]').forEach((x) => x.addEventListener('input', () => (sectionsDraft[x.dataset.sn].name = x.value)))
+	body.querySelectorAll('[data-sm]').forEach((x) => x.addEventListener('change', () => (sectionsDraft[x.dataset.sm].mode = x.value)))
+	body.querySelectorAll('[data-sc]').forEach((x) => x.addEventListener('change', () => {
+		const sec = sectionsDraft[x.dataset.sc]
+		sec.controls = META.controls.map((c) => c.id).filter((id) => (id === x.value ? x.checked : sec.controls.includes(id)))
+	}))
+	const move = (i, j) => { if (j < 0 || j >= sectionsDraft.length) return; [sectionsDraft[i], sectionsDraft[j]] = [sectionsDraft[j], sectionsDraft[i]]; drawSections() }
+	body.querySelectorAll('[data-su]').forEach((b) => b.addEventListener('click', () => move(+b.dataset.su, +b.dataset.su - 1)))
+	body.querySelectorAll('[data-sd]').forEach((b) => b.addEventListener('click', () => move(+b.dataset.sd, +b.dataset.sd + 1)))
+	body.querySelectorAll('[data-sx]').forEach((b) => b.addEventListener('click', () => { if (confirm('Delete this section?')) { sectionsDraft.splice(+b.dataset.sx, 1); drawSections() } }))
+	$('#sAdd').onclick = () => { sectionsDraft.push({ id: 's' + Date.now().toString(36), name: 'New section', controls: [], mode: 'collapsible' }); drawSections() }
+	$('#sSave').onclick = async () => { await cmd({ cmd: 'sections', sections: sectionsDraft }); flash('Sections saved') }
+}
+
+function drawIO() {
+	const body = $('#dlgBody')
+	let parts = ''
+	if (importFile) {
+		const st = importFile.store || importFile
+		const list = [['page', 'Page and meter settings'], ['sections', 'Sections'], ['defaults', 'Auto gain defaults'], ['gestures', 'Button timings and module calibrate level'], ['order', 'Input order and hidden inputs']]
+		for (const n of Object.keys(st.inputs || {})) list.push(['input:' + n, 'Input: ' + n])
+		parts = `<div class="card"><h4>Import ${esc(importFile.exported ? 'from ' + importFile.exported.slice(0, 16).replace('T', ' ') : '')}</h4><div class="checks">${list.map(([id, l]) => `<label><input type="checkbox" data-part="${esc(id)}" checked>${esc(l)}</label>`).join('')}</div>
+			<p class="help">The current settings are saved to the autosave first, so this can be rolled back.</p><div class="btns"><button id="iGo" class="on">Import ticked parts</button><button id="iCancel">Cancel</button></div></div>`
+	}
+	body.innerHTML = `<div class="card"><h4>Export</h4><p class="help">Everything: page, sections, defaults, buttons, input order and every input's settings and targets.</p><div class="btns"><a href="/export${q()}" download><button>Download settings file</button></a></div></div>
+		<div class="card"><h4>Import</h4><input type="file" id="iFile" accept=".json,application/json"></div>${parts}
+		<div class="card"><h4>Autosave</h4><p class="help">${S.autosave ? 'Taken before the last import.' : 'None yet: one is taken before every import.'}</p><div class="btns"><button id="iRestore" ${S.autosave ? '' : 'disabled'}>Roll back to the autosave</button></div></div>`
+	$('#iFile').onchange = async (e) => {
+		const file = e.target.files[0]
+		if (!file) return
+		try { importFile = JSON.parse(await file.text()); importFile._text = await file.text() } catch { flash("That isn't a settings file"); importFile = null }
+		drawIO()
+	}
+	if ($('#iGo')) {
+		$('#iGo').onclick = async () => {
+			const picked = [...body.querySelectorAll('[data-part]:checked')].map((x) => x.dataset.part)
+			const r = await cmd({ cmd: 'import', data: importFile._text, parts: picked })
+			if (r?.ok) { importFile = null; drawIO() }
+		}
+		$('#iCancel').onclick = () => { importFile = null; drawIO() }
+	}
+	$('#iRestore').onclick = async () => { if (confirm('Roll back to the autosave?')) { await cmd({ cmd: 'restoreAutosave' }); drawIO() } }
+}
+
+window.addEventListener('resize', () => { if (S) for (const [n, s] of strips) { const inp = S.inputs.find((i) => i.name === n); if (inp) updateStrip(s, inp) } })
+connect()
+</script>
+</body>
+</html>
