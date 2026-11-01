@@ -17,6 +17,6 @@
 		"entrypoint": "../dist/main.js"
 	},
 	"manufacturer": "OBS Project",
-	"products": ["OBS Studio"],
+	"products": ["OBS Audio"],
 	"keywords": ["OBS", "audio", "auto gain", "AGC", "faders", "meters"]
 }
