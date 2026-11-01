@@ -13,8 +13,21 @@ const OP_EVENT = 5
 const OP_REQUEST = 6
 const OP_RESPONSE = 7
 
-/** General | Inputs | Filters | InputVolumeMeters */
-export const EVENT_SUBS = 1 | 8 | 32 | (1 << 16)
+/** General | Inputs | Filters | Outputs | InputVolumeMeters */
+export const EVENT_SUBS = 1 | 8 | 32 | 64 | (1 << 16)
+
+/** Why a connection to OBS failed or dropped, in plain words */
+export function explainClose(code: number, reason: string, host: string, port: number, everConnected: boolean): string {
+	if (code === 4009) {
+		return `OBS says the password is wrong. In OBS: Tools → WebSocket Server Settings → Show Connect Info, copy the Server Password into this connection, or untick Enable Authentication there and leave the password blank.`
+	}
+	if (code === 4010) return 'OBS is running an older WebSocket version this module can\'t talk to (needs obs-websocket 5, built into OBS 28 and later).'
+	if (code === 1006 && !everConnected) {
+		return `Can't reach OBS at ${host}:${port}. Is OBS running, and is its WebSocket server on? In OBS: Tools → WebSocket Server Settings → tick Enable WebSocket server (it's off by default) and check the port (normally 4455).`
+	}
+	if (code === 1006) return `Lost the connection to OBS at ${host}:${port} (OBS closed, or the network dropped). Trying again.`
+	return `Disconnected from OBS${reason ? `: ${reason}` : ` (code ${code})`}. Trying again.`
+}
 
 export class ObsRequestError extends Error {
 	constructor(
@@ -45,7 +58,10 @@ export class ObsClient extends EventEmitter {
 	#opts: ObsOptions
 	#pending = new Map<string, Pending>()
 	#identified = false
+	#everConnected = false
 	#stopped = true
+	/** The last reason the connection failed, in plain words, or '' */
+	lastError = ''
 	#retry: NodeJS.Timeout | null = null
 
 	constructor(opts: ObsOptions) {
@@ -91,7 +107,8 @@ export class ObsClient extends EventEmitter {
 			const was = this.#identified
 			this.#identified = false
 			this.#failPending(new Error('Disconnected from OBS'))
-			this.emit('disconnected', ev.reason || `code ${ev.code}`, was)
+			this.lastError = explainClose(ev.code, ev.reason, this.#opts.host, this.#opts.port, this.#everConnected)
+			this.emit('disconnected', this.lastError, was)
 			this.#scheduleRetry()
 		}
 	}
@@ -155,6 +172,8 @@ export class ObsClient extends EventEmitter {
 			}
 			case OP_IDENTIFIED:
 				this.#identified = true
+				this.#everConnected = true
+				this.lastError = ''
 				this.emit('connected')
 				break
 			case OP_EVENT:

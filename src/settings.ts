@@ -17,7 +17,7 @@ export type MoveMode = 'glide' | 'jump'
 export type GrabMode = 'retarget' | 'pause' | 'off'
 export type SectionMode = 'hidden' | 'open' | 'collapsible'
 
-/** Per-input auto gain settings. The defaults hold every one; inputs override some. */
+/** Per-input settings. The defaults hold every one; inputs override some. */
 export interface InputSettings {
 	riderOn: boolean
 	controlMode: ControlMode
@@ -45,6 +45,14 @@ export interface InputSettings {
 	calibrateRateDbPerS: number
 	grab: GrabMode
 	grabPauseMs: number
+	backupOf: string
+	backupAuto: boolean
+	backupDeadDb: number
+	backupDeviationDb: number
+	backupDetectMs: number
+	backupFadeMs: number
+	backupRecoverMs: number
+	backupSnoozeMs: number
 }
 
 export const INPUT_DEFAULTS: InputSettings = {
@@ -74,105 +82,139 @@ export const INPUT_DEFAULTS: InputSettings = {
 	calibrateRateDbPerS: 6,
 	grab: 'retarget',
 	grabPauseMs: 3000,
+	backupOf: '',
+	backupAuto: false,
+	backupDeadDb: -60,
+	backupDeviationDb: 12,
+	backupDetectMs: 1500,
+	backupFadeMs: 500,
+	backupRecoverMs: 5000,
+	backupSnoozeMs: 300000,
 }
 
 interface FieldInfo {
 	label: string
-	type: 'bool' | 'number' | 'choice' | 'text'
+	type: 'bool' | 'number' | 'choice' | 'text' | 'input'
 	min?: number
 	max?: number
 	step?: number
 	unit?: string
 	choices?: { id: string; label: string }[]
-	help?: string
+	/** Tooltip: what it does, in plain words */
+	help: string
+	/** Which group it's shown in on the page */
+	group: 'rider' | 'capture' | 'limits' | 'quiet' | 'calibrate' | 'backup'
 }
 
-/** Labels, ranges and choices for each input setting: used by actions and the web page */
+/** Labels, ranges, choices and tooltips for each input setting: used by actions and the web page */
 export const INPUT_FIELDS: Record<keyof InputSettings, FieldInfo> = {
-	riderOn: { label: 'Rider on', type: 'bool' },
+	riderOn: { label: 'Rider on', type: 'bool', group: 'rider', help: 'Keeps this input near its target level by moving the fader (or trim) for you, like an op riding a fader.' },
 	controlMode: {
 		label: 'Auto gain moves',
 		type: 'choice',
+		group: 'rider',
 		choices: [
 			{ id: 'fader', label: 'OBS fader' },
 			{ id: 'trim', label: 'Trim (Gain filter)' },
 		],
-		help: 'Trim: a Gain filter before the fader, so the fader stays yours',
+		help: 'What auto gain moves. OBS fader: rides the fader and measures after it. Trim: adds a Gain filter before the fader and rides that, so the fader stays yours.',
 	},
-	trimFilterName: { label: 'Trim filter name', type: 'text' },
+	trimFilterName: { label: 'Trim filter name', type: 'text', group: 'rider', help: 'The name of the Gain filter used as trim. The module adds it to the input if it isn\'t there.' },
 	measure: {
-		label: 'Rider measures',
+		label: 'Rider listens to',
 		type: 'choice',
+		group: 'rider',
 		choices: [
-			{ id: 'rms', label: 'Average (RMS)' },
-			{ id: 'peak', label: 'Peak' },
+			{ id: 'rms', label: 'Average level' },
+			{ id: 'peak', label: 'Peaks' },
 		],
+		help: 'Average level follows loudness like an ear does and ignores single loud moments. Peaks reacts to every transient, so it moves more often.',
 	},
-	measureWindowMs: { label: 'Measuring window', type: 'number', min: 100, max: 30000, step: 100, unit: 'ms' },
+	measureWindowMs: { label: 'Listening window', type: 'number', group: 'rider', min: 100, max: 30000, step: 100, unit: 'ms', help: 'How much recent audio the rider averages before deciding. Longer = calmer, slower to react.' },
 	stereo: {
 		label: 'Stereo',
 		type: 'choice',
+		group: 'rider',
 		choices: [
-			{ id: 'max', label: 'Linked, louder side' },
-			{ id: 'avg', label: 'Averaged' },
+			{ id: 'max', label: 'Louder side' },
+			{ id: 'avg', label: 'Both sides averaged' },
 		],
+		help: 'For stereo inputs: follow the louder side (keeps the image, moves both together) or the average of both.',
 	},
-	captureMode: {
-		label: '"This level please" captures',
-		type: 'choice',
-		choices: [
-			{ id: 'average', label: 'Average over window' },
-			{ id: 'instant', label: 'Instant' },
-		],
-	},
-	captureWindowMs: { label: 'Capture window', type: 'number', min: 100, max: 30000, step: 100, unit: 'ms' },
-	bandDb: { label: 'Band (±)', type: 'number', min: 0, max: 30, step: 0.5, unit: 'dB' },
+	bandDb: { label: 'Leave alone within ±', type: 'number', group: 'rider', min: 0, max: 30, step: 0.5, unit: 'dB', help: 'How far the level can wander from the target before the rider steps in. Nothing moves while it stays inside this band.' },
 	rideBack: {
-		label: 'Ride back',
+		label: 'When it rides, go back',
 		type: 'choice',
+		group: 'rider',
 		choices: [
-			{ id: 'target', label: 'To the target' },
+			{ id: 'target', label: 'All the way to the target' },
 			{ id: 'band', label: 'Just inside the band' },
 		],
+		help: 'All the way: rides until the level is back on the target. Just inside: stops as soon as it is back in the band (smaller, fewer moves).',
 	},
-	rideRateDbPerS: { label: 'Ride rate', type: 'number', min: 0.1, max: 60, step: 0.1, unit: 'dB/s' },
-	settleDb: { label: 'Settle within', type: 'number', min: 0.1, max: 10, step: 0.1, unit: 'dB', help: 'How close to the target counts as arrived' },
-	maxBoostDb: { label: 'Max boost from set point', type: 'number', min: 0, max: 60, step: 0.5, unit: 'dB' },
-	maxCutDb: { label: 'Max cut from set point', type: 'number', min: 0, max: 100, step: 0.5, unit: 'dB' },
-	floorDb: { label: 'Floor', type: 'number', min: -100, max: 26, step: 0.5, unit: 'dB' },
-	ceilingDb: { label: 'Ceiling', type: 'number', min: -100, max: 26, step: 0.5, unit: 'dB' },
-	quietMode: {
-		label: 'When quiet',
-		type: 'choice',
-		choices: [
-			{ id: 'freeze', label: 'Freeze' },
-			{ id: 'drift', label: 'Freeze, then drift back' },
-		],
-	},
-	quietThresholdDb: { label: 'Quiet below', type: 'number', min: -100, max: 0, step: 1, unit: 'dB', help: 'Incoming peak, before trim and fader' },
-	quietDriftAfterMs: { label: 'Drift back after', type: 'number', min: 0, max: 600000, step: 500, unit: 'ms' },
-	driftRateDbPerS: { label: 'Drift rate', type: 'number', min: 0.1, max: 60, step: 0.1, unit: 'dB/s' },
-	calibrateDb: { label: 'Calibrate level', type: 'number', min: -60, max: 10, step: 0.5, unit: 'dB' },
-	calibrateSetsTarget: { label: 'Calibrate sets rider target', type: 'bool' },
-	calibrateMove: {
-		label: 'Calibrate moves',
-		type: 'choice',
-		choices: [
-			{ id: 'glide', label: 'Glide' },
-			{ id: 'jump', label: 'Jump' },
-		],
-	},
-	calibrateRateDbPerS: { label: 'Calibrate glide rate', type: 'number', min: 0.1, max: 100, step: 0.5, unit: 'dB/s' },
+	rideRateDbPerS: { label: 'Riding speed', type: 'number', group: 'rider', min: 0.1, max: 60, step: 0.1, unit: 'dB/s', help: 'How fast the rider moves the fader. Slow is gentle and less noticeable; fast catches big changes sooner.' },
+	settleDb: { label: 'Close enough within', type: 'number', group: 'rider', min: 0.1, max: 10, step: 0.1, unit: 'dB', help: 'How close to the target counts as back on target, so it stops moving.' },
 	grab: {
-		label: 'Fader moved while riding',
+		label: 'If you move the fader',
 		type: 'choice',
+		group: 'rider',
 		choices: [
 			{ id: 'retarget', label: 'Where you leave it is the new target' },
 			{ id: 'pause', label: 'Rider pauses, same target' },
 			{ id: 'off', label: 'Rider switches off' },
 		],
+		help: 'What happens when you (or anyone) move the fader while the rider is on.',
 	},
-	grabPauseMs: { label: 'Pause after an outside move', type: 'number', min: 0, max: 60000, step: 100, unit: 'ms' },
+	grabPauseMs: { label: 'Pause after an outside move', type: 'number', group: 'rider', min: 0, max: 60000, step: 100, unit: 'ms', help: 'With "Rider pauses": how long it waits after someone else moves the fader before riding again.' },
+	captureMode: {
+		label: '"This level please" takes',
+		type: 'choice',
+		group: 'capture',
+		choices: [
+			{ id: 'average', label: 'An average over a few seconds' },
+			{ id: 'instant', label: 'The level right now' },
+		],
+		help: 'How the target is captured when you press "This level please" (or calibrate). An average ignores a single loud or quiet moment.',
+	},
+	captureWindowMs: { label: 'Averaging time', type: 'number', group: 'capture', min: 100, max: 30000, step: 100, unit: 'ms', help: 'How long it listens when capturing an average.' },
+	maxBoostDb: { label: 'Never boost more than', type: 'number', group: 'limits', min: 0, max: 60, step: 0.5, unit: 'dB', help: 'The most the rider will push up from where the target was set. Stops it chasing a dead mic up to full gain.' },
+	maxCutDb: { label: 'Never cut more than', type: 'number', group: 'limits', min: 0, max: 100, step: 0.5, unit: 'dB', help: 'The most the rider will pull down from where the target was set.' },
+	floorDb: { label: 'Never below', type: 'number', group: 'limits', min: -100, max: 26, step: 0.5, unit: 'dB', help: 'An absolute lowest fader (or trim) setting the rider may use.' },
+	ceilingDb: { label: 'Never above', type: 'number', group: 'limits', min: -100, max: 26, step: 0.5, unit: 'dB', help: 'An absolute highest fader (or trim) setting the rider may use.' },
+	quietMode: {
+		label: 'When the input goes quiet',
+		type: 'choice',
+		group: 'quiet',
+		choices: [
+			{ id: 'freeze', label: 'Hold still' },
+			{ id: 'drift', label: 'Hold, then drift back to the set point' },
+		],
+		help: 'In pauses (nobody talking) the rider holds still rather than pushing up into silence. Drift back slowly returns it to where the target was set if the quiet goes on.',
+	},
+	quietThresholdDb: { label: 'Quiet means below', type: 'number', group: 'quiet', min: -100, max: 0, step: 1, unit: 'dB', help: 'Incoming level (peak, before trim and fader) below which the input counts as quiet.' },
+	quietDriftAfterMs: { label: 'Drift back after', type: 'number', group: 'quiet', min: 0, max: 600000, step: 500, unit: 'ms', help: 'With "Hold, then drift back": how long it must stay quiet before drifting.' },
+	driftRateDbPerS: { label: 'Drift speed', type: 'number', group: 'quiet', min: 0.1, max: 60, step: 0.1, unit: 'dB/s', help: 'How fast it drifts back.' },
+	calibrateDb: { label: 'Calibrate this input to', type: 'number', group: 'calibrate', min: -60, max: 10, step: 0.5, unit: 'dB', help: 'The level a double tap (or "Cal" button) brings this input to.' },
+	calibrateSetsTarget: { label: 'Calibrate also sets the target', type: 'bool', group: 'calibrate', help: 'After calibrating, the rider holds that level (until you next press "This level please").' },
+	calibrateMove: {
+		label: 'Calibrate moves by',
+		type: 'choice',
+		group: 'calibrate',
+		choices: [
+			{ id: 'glide', label: 'Gliding there' },
+			{ id: 'jump', label: 'Jumping there' },
+		],
+		help: 'Glide moves the fader smoothly; jump sets it straight away.',
+	},
+	calibrateRateDbPerS: { label: 'Calibrate glide speed', type: 'number', group: 'calibrate', min: 0.1, max: 100, step: 0.5, unit: 'dB/s', help: 'How fast a calibrate glides.' },
+	backupOf: { label: 'This is the backup for', type: 'input', group: 'backup', help: 'Make this input the backup feed of another input (the main). Normally its fader is down; on a switch it takes over.' },
+	backupAuto: { label: 'Switch to backup automatically', type: 'bool', group: 'backup', help: 'If the main drops out, or goes very high or low while this backup looks healthy, crossfade to this backup and say what happened. It never switches back by itself.' },
+	backupDeadDb: { label: 'Main counts as dropped below', type: 'number', group: 'backup', min: -100, max: 0, step: 1, unit: 'dB', help: 'If the main\'s incoming level stays below this while the backup is above it, the main counts as dropped.' },
+	backupDeviationDb: { label: 'Or differs from backup by more than', type: 'number', group: 'backup', min: 1, max: 60, step: 1, unit: 'dB', help: 'Main and backup normally sit at a steady difference. If the main moves this far away from that (very high or very low), it looks wrong.' },
+	backupDetectMs: { label: 'For at least', type: 'number', group: 'backup', min: 100, max: 60000, step: 100, unit: 'ms', help: 'How long the main must look wrong before switching, so a single glitch doesn\'t.' },
+	backupFadeMs: { label: 'Crossfade time', type: 'number', group: 'backup', min: 0, max: 10000, step: 50, unit: 'ms', help: 'How long the crossfade between main and backup takes (avoids clicks).' },
+	backupRecoverMs: { label: 'Main counts as back after', type: 'number', group: 'backup', min: 500, max: 600000, step: 500, unit: 'ms', help: 'How long the main must look healthy again before you\'re asked whether to take it back.' },
+	backupSnoozeMs: { label: 'Snooze asks again after', type: 'number', group: 'backup', min: 10000, max: 3600000, step: 10000, unit: 'ms', help: 'When you snooze the "main is back" question, how long until it asks again.' },
 }
 
 export const INPUT_SETTING_KEYS = Object.keys(INPUT_DEFAULTS) as (keyof InputSettings)[]
@@ -192,9 +234,7 @@ export const CONTROLS: { id: string; label: string }[] = [
 	{ id: 'upward_compressor_filter', label: 'Upward compressor' },
 	{ id: 'limiter_filter', label: 'Limiter' },
 	{ id: 'gain_filter', label: 'Gain filters (other)' },
-	{ id: 'autogain_buttons', label: 'Auto gain: rider, this level, calibrate' },
-	{ id: 'autogain_target', label: 'Auto gain: target and status' },
-	{ id: 'autogain_settings', label: 'Auto gain: all settings' },
+	{ id: 'backup', label: 'Backup feed' },
 	{ id: 'tracks', label: 'Recording tracks' },
 ]
 
@@ -206,7 +246,7 @@ export interface Section {
 }
 
 export const STARTER_SECTIONS: Section[] = [
-	{ id: 'input', name: 'Input', controls: ['mute', 'monitor', 'balance', 'sync', 'trim'], mode: 'collapsible' },
+	{ id: 'input', name: 'Input', controls: ['trim', 'balance', 'sync', 'backup'], mode: 'collapsible' },
 	{
 		id: 'processing',
 		name: 'Processing',
@@ -219,12 +259,6 @@ export const STARTER_SECTIONS: Section[] = [
 			'upward_compressor_filter',
 			'limiter_filter',
 		],
-		mode: 'collapsible',
-	},
-	{
-		id: 'autogain',
-		name: 'Auto gain',
-		controls: ['autogain_buttons', 'autogain_target', 'autogain_settings'],
 		mode: 'collapsible',
 	},
 	{ id: 'tracks', name: 'Tracks', controls: ['tracks'], mode: 'collapsible' },
@@ -253,6 +287,12 @@ export interface PageSettings {
 	fineRatio: number
 	doubleTapUnity: boolean
 	accentColour: string
+	pflMode: 'additive' | 'exclusive'
+	soloLatch: boolean
+	tooltips: boolean
+	tipsOnOpen: boolean
+	recordLeadMin: number
+	recordSnoozeMin: number
 }
 
 export const PAGE_DEFAULTS: PageSettings = {
@@ -268,16 +308,22 @@ export const PAGE_DEFAULTS: PageSettings = {
 	peakFallDbPerS: 20,
 	greenToDb: -18,
 	yellowToDb: -6,
-	greenColour: '#2ecc40',
-	yellowColour: '#ffd400',
-	redColour: '#ff3030',
-	bandColour: '#8b5cf6',
-	ridingColour: '#00c2ff',
+	greenColour: '#4fe07a',
+	yellowColour: '#ffd84a',
+	redColour: '#ff5a4a',
+	bandColour: '#7a2fe0',
+	ridingColour: '#5cd8f5',
 	targetColour: '#ffffff',
 	meterRateHz: 20,
 	fineRatio: 0.2,
 	doubleTapUnity: true,
-	accentColour: '#8b5cf6',
+	accentColour: '#7a2fe0',
+	pflMode: 'additive',
+	soloLatch: false,
+	tooltips: true,
+	tipsOnOpen: true,
+	recordLeadMin: 10,
+	recordSnoozeMin: 5,
 }
 
 export interface GestureSettings {
@@ -311,7 +357,22 @@ export interface Store {
 	order: string[]
 	hidden: string[]
 	inputs: Record<string, InputRecord>
+	/** The next planned recording start, if any */
+	record: RecordPlan
 }
+
+export interface RecordPlan {
+	/** ISO time the recording is due to (re)start, or null */
+	nextStart: string | null
+	/** Start it automatically at that time */
+	autoStart: boolean
+	/** The "Start recording?" prompt is snoozed until this ISO time */
+	snoozedUntil: string | null
+	/** The prompt was dismissed for this nextStart */
+	dismissed: boolean
+}
+
+export const RECORD_DEFAULTS: RecordPlan = { nextStart: null, autoStart: false, snoozedUntil: null, dismissed: false }
 
 export function newStore(): Store {
 	return {
@@ -324,6 +385,7 @@ export function newStore(): Store {
 		order: [],
 		hidden: [],
 		inputs: {},
+		record: { ...RECORD_DEFAULTS },
 	}
 }
 
@@ -394,6 +456,13 @@ export function loadStore(raw: unknown): Store {
 	if (Array.isArray(src.order)) store.order = src.order.filter((x): x is string => typeof x === 'string')
 	if (Array.isArray(src.hidden)) store.hidden = src.hidden.filter((x): x is string => typeof x === 'string')
 	for (const [name, rec] of Object.entries(obj(src.inputs))) store.inputs[name] = sanitizeRecord(rec)
+	const r = obj(src.record)
+	store.record = {
+		nextStart: typeof r.nextStart === 'string' ? r.nextStart : null,
+		autoStart: r.autoStart === true,
+		snoozedUntil: typeof r.snoozedUntil === 'string' ? r.snoozedUntil : null,
+		dismissed: r.dismissed === true,
+	}
 	return store
 }
 

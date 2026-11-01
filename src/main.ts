@@ -13,30 +13,75 @@ import {
 	type CompanionInputFieldTextInput,
 	type SomeCompanionConfigField,
 } from '@companion-module/base'
+import { networkInterfaces } from 'node:os'
+import { spawn } from 'node:child_process'
 import { Engine, type InputInfo, type MonitorType } from './engine.js'
 import { WebServer } from './web.js'
 import { type Db, dbToPosition, fmtDb, parseDb, parseNumber, positionToDb, clamp, MIN_DB } from './law.js'
 import { ALL_FILTER_PARAMS, FILTER_KINDS, filterKind, slug } from './filters.js'
-import { INPUT_FIELDS, INPUT_SETTING_KEYS, type InputSettings } from './settings.js'
+import { INPUT_FIELDS, INPUT_SETTING_KEYS, PAGE_DEFAULTS, type InputSettings, type PageSettings } from './settings.js'
 import { RIDER_STATES, type RiderState } from './rider.js'
 import { DEFAULT_BAND, DEFAULT_DWELL_MS, DEFAULT_FLASH_MS, DEFAULT_RELEASE_BAND, DEFAULT_RELEASE_MS, NEVER_RELEASE_BAND } from './pickup.js'
 import { parseColour, rgb, scaleColour } from './colour.js'
 
 interface Config {
 	host: string
-	port: number
+	port: string | number
 	password: string
-	webPort: number
+	webPort: string | number
 	webBind: string
 	pin: string
-	varRateHz: number
-	updateHours: number
+	varRateHz: string | number
+	updateHours: string | number
 	/** The module's own settings, saved here by the module (not edited by hand) */
 	store?: string
 	autosave?: string
 }
 
 type Ctx = Pick<CompanionActionContext, 'parseVariablesInString'>
+
+interface Resolved {
+	host: string
+	port: number
+	password: string
+	webPort: number
+	bind: string
+	pin: string
+	varRateHz: number
+	updateHours: number
+}
+
+const PAGE_SETTING_CHOICES = (Object.keys(PAGE_DEFAULTS) as (keyof PageSettings)[]).map((k) => ({ id: k, label: k }))
+
+/** Open a web address in this computer's default browser */
+function openInBrowser(url: string, warn: (m: string) => void): void {
+	try {
+		const [cmd, args] =
+			process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]]
+		const child = spawn(cmd, args as string[], { detached: true, stdio: 'ignore', windowsHide: true })
+		child.on('error', (e) => warn(`Couldn't open a browser: ${e.message}`))
+		child.unref()
+	} catch (e) {
+		warn(`Couldn't open a browser: ${(e as Error).message}`)
+	}
+}
+
+/** The page's network setting: 'all', 'local', or an address */
+function bindAddress(v: string): string {
+	const t = v.trim().toLowerCase()
+	if (t === '' || t === 'all' || t === '0.0.0.0') return '0.0.0.0'
+	if (t === 'local' || t === 'localhost') return '127.0.0.1'
+	return v.trim()
+}
+
+/** This computer's IPv4 network addresses */
+function localAddresses(): { name: string; address: string }[] {
+	const out: { name: string; address: string }[] = []
+	for (const [name, list] of Object.entries(networkInterfaces())) {
+		for (const a of list ?? []) if (a.family === 'IPv4' && !a.internal) out.push({ name, address: a.address })
+	}
+	return out
+}
 
 const INPUT_TIP = 'The OBS input name, or its number in the list (1 = first). Can be a variable.'
 
@@ -69,6 +114,10 @@ class ObsAudioInstance extends InstanceBase<Config> {
 	#lastSaved = ''
 	#structureTimer: NodeJS.Timeout | null = null
 
+	#resolved: Resolved | null = null
+	#pollTimer: NodeJS.Timeout | null = null
+	#recordingActions = false
+
 	override async init(config: Config): Promise<void> {
 		this.config = config
 		this.engine = new Engine(
@@ -82,39 +131,64 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			config.autosave ?? '',
 		)
 		this.#lastSaved = config.store ?? ''
-		this.#start()
+		this.engine.on('status', () => this.#status())
+		this.engine.on('recordable', (actionId: string, options: CompanionOptionValues, key: string) => {
+			if (this.#recordingActions) this.recordAction({ actionId, options }, key)
+		})
+		this.updateStatus(InstanceStatus.Connecting)
+		await this.#apply()
+		this.#structureChanged()
+		// connection settings can be variables: check them for changes every couple of seconds
+		this.#pollTimer = setInterval(() => void this.#apply(), 2000)
 	}
 
-	#start(): void {
+	/** Work out the connection settings (variables included) and apply any that changed */
+	async #apply(): Promise<void> {
 		const c = this.config
-		this.updateStatus(InstanceStatus.Connecting)
-		this.engine.connect(c.host || '127.0.0.1', Number(c.port) || 4455, c.password ?? '')
-		this.engine.on('status', () => this.#status())
-		this.web?.stop()
-		if (Number(c.webPort) > 0) {
-			this.web = new WebServer(this.engine, { port: Number(c.webPort), bind: c.webBind || '0.0.0.0', pin: c.pin ?? '' }, (level, msg) =>
-				this.log(level, msg),
-			)
-			this.web.start()
+		const parse = async (v: unknown) => (await this.parseVariablesInString(String(v ?? ''))).trim()
+		const r: Resolved = {
+			host: (await parse(c.host)) || '127.0.0.1',
+			port: parseNumber(await parse(c.port), 4455, 1, 65535),
+			password: await parse(c.password),
+			webPort: parseNumber(await parse(c.webPort), 8890, 0, 65535),
+			bind: bindAddress(await parse(c.webBind)),
+			pin: await parse(c.pin),
+			varRateHz: parseNumber(await parse(c.varRateHz), 5, 1, 20),
+			updateHours: parseNumber(await parse(c.updateHours), 12, 0, 720),
 		}
-		this.#structureChanged()
-		this.#restartVarTimer()
-		this.engine.setUpdateChecks(Number(this.config.updateHours ?? 12))
+		const old = this.#resolved
+		this.#resolved = r
+		if (!old || old.host !== r.host || old.port !== r.port || old.password !== r.password) {
+			this.updateStatus(InstanceStatus.Connecting)
+			this.engine.connect(r.host, Math.round(r.port), r.password)
+		}
+		if (!old || old.webPort !== r.webPort || old.bind !== r.bind || old.pin !== r.pin) {
+			this.web?.stop()
+			this.web = null
+			if (r.webPort > 0) {
+				this.web = new WebServer(this.engine, { port: Math.round(r.webPort), bind: r.bind, pin: r.pin }, (level, msg) => this.log(level, msg))
+				this.web.start()
+			}
+			this.setVariableValues(this.#urlVariables())
+		}
+		if (!old || old.varRateHz !== r.varRateHz) this.#restartVarTimer()
+		if (!old || old.updateHours !== r.updateHours) this.engine.setUpdateChecks(r.updateHours)
 	}
 
 	#status(): void {
 		if (this.engine.connected) this.updateStatus(InstanceStatus.Ok)
-		else this.updateStatus(InstanceStatus.ConnectionFailure, 'Waiting for OBS')
+		else this.updateStatus(InstanceStatus.ConnectionFailure, this.engine.obs?.lastError || 'Waiting for OBS')
 	}
 
 	#restartVarTimer(): void {
 		if (this.#varTimer) clearInterval(this.#varTimer)
-		const hz = clamp(Number(this.config.varRateHz) || 5, 1, 20)
+		const hz = clamp(this.#resolved?.varRateHz ?? 5, 1, 20)
 		this.#varTimer = setInterval(() => this.#meterVariables(), 1000 / hz)
 	}
 
 	override async destroy(): Promise<void> {
 		if (this.#varTimer) clearInterval(this.#varTimer)
+		if (this.#pollTimer) clearInterval(this.#pollTimer)
 		if (this.#structureTimer) clearTimeout(this.#structureTimer)
 		this.web?.stop()
 		this.engine.destroy()
@@ -124,15 +198,12 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		const old = this.config
 		// the store is the module's own: keep the running copy
 		this.config = { ...config, store: old.store, autosave: old.autosave }
-		const changed = (['host', 'port', 'password', 'webPort', 'webBind', 'pin'] as const).some((k) => String(old[k] ?? '') !== String(config[k] ?? ''))
-		if (changed) {
-			this.engine.removeAllListeners('status')
-			this.engine.obs?.stop()
-			this.#start()
-		}
-		if (old.varRateHz !== config.varRateHz) this.#restartVarTimer()
-		if (old.updateHours !== config.updateHours) this.engine.setUpdateChecks(Number(config.updateHours ?? 12))
+		await this.#apply()
 		if (config.store !== old.store) this.saveConfig(this.config)
+	}
+
+	override handleStartStopRecordActions(isRecording: boolean): void {
+		this.#recordingActions = isRecording
 	}
 
 	#saveStore(store: string, autosave: string): void {
@@ -142,17 +213,109 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		this.saveConfig(this.config)
 	}
 
+	/** The fader page's addresses on this computer */
+	#pageUrls(): string[] {
+		const r = this.#resolved
+		if (!r || r.webPort <= 0) return []
+		const port = Math.round(r.webPort)
+		if (r.bind === '127.0.0.1') return [`http://127.0.0.1:${port}/`]
+		if (r.bind !== '0.0.0.0') return [`http://${r.bind}:${port}/`]
+		return [...localAddresses().map((a) => `http://${a.address}:${port}/`), `http://127.0.0.1:${port}/`]
+	}
+
+	#urlVariables(): CompanionVariableValues {
+		const urls = this.#pageUrls()
+		return { page_url: urls[0] ?? '', page_urls: urls.join(' ') }
+	}
+
 	override getConfigFields(): SomeCompanionConfigField[] {
+		const urls = this.#pageUrls()
+		const obsState = this.engine?.connected ? 'Connected to OBS.' : `Not connected to OBS. ${this.engine?.obs?.lastError || ''}`
+		const nets = localAddresses()
+		const VAR = ' Can be a variable, e.g. $(custom:obs_host).'
 		return [
-			{ type: 'static-text', id: 'info', label: '', width: 12, value: 'OBS: Tools → WebSocket Server Settings. The fader page is at http://<this computer>:<page port>/ (also usable as an OBS custom browser dock).' },
-			{ type: 'textinput', id: 'host', label: 'OBS address', width: 6, default: '127.0.0.1' },
-			{ type: 'number', id: 'port', label: 'OBS WebSocket port', width: 3, default: 4455, min: 1, max: 65535 },
-			{ type: 'textinput', id: 'password', label: 'OBS WebSocket password', width: 6, default: '' },
-			{ type: 'number', id: 'webPort', label: 'Fader page port (0 = off)', width: 3, default: 8890, min: 0, max: 65535 },
-			{ type: 'textinput', id: 'webBind', label: 'Fader page network address (0.0.0.0 = all)', width: 6, default: '0.0.0.0' },
-			{ type: 'textinput', id: 'pin', label: 'Fader page PIN (blank = none)', width: 3, default: '' },
-			{ type: 'number', id: 'varRateHz', label: 'Meter variables: updates per second', width: 3, default: 5, min: 1, max: 20 },
-			{ type: 'number', id: 'updateHours', label: 'Check for module and OBS updates every (hours, 0 = never)', width: 6, default: 12, min: 0, max: 720 },
+			{
+				type: 'static-text',
+				id: 'info',
+				label: 'Status',
+				width: 12,
+				value:
+					`${obsState}<br>` +
+					(urls.length ? `Fader page: ${urls.map((u) => `<a href="${u}" target="_blank">${u}</a>`).join(' · ')} (also usable as an OBS custom browser dock: Docks → Custom Browser Docks).` : 'Fader page: off.') +
+					'<br>OBS setup: Tools → WebSocket Server Settings. Tick <b>Enable WebSocket server</b> (it is off by default). OBS also turns on a password: copy it from <b>Show Connect Info</b> into the password below, or untick <b>Enable Authentication</b> and leave the password blank.',
+			},
+			{
+				type: 'textinput',
+				id: 'host',
+				label: 'OBS address',
+				width: 6,
+				default: '127.0.0.1',
+				tooltip: 'The computer OBS runs on. 127.0.0.1 = this computer. Otherwise its IP address, e.g. 192.168.1.20.' + VAR,
+			},
+			{
+				type: 'textinput',
+				id: 'port',
+				label: 'OBS WebSocket port (default 4455)',
+				width: 3,
+				default: '4455',
+				tooltip: "OBS's WebSocket port, shown in OBS: Tools → WebSocket Server Settings → Server Port. 4455 unless it was changed." + VAR,
+			},
+			{
+				type: 'textinput',
+				id: 'password',
+				label: 'OBS WebSocket password',
+				width: 6,
+				default: '',
+				tooltip:
+					"OBS makes up a password and has authentication on by default. Copy it from OBS: Tools → WebSocket Server Settings → Show Connect Info. Or untick Enable Authentication there and leave this blank (then anything on the network can control OBS)." + VAR,
+			},
+			{
+				type: 'textinput',
+				id: 'webPort',
+				label: 'Fader page port (default 8890, 0 = off)',
+				width: 3,
+				default: '8890',
+				tooltip: 'The port the fader and meter page is served on. Open http://<this computer>:<port>/ in any browser on the network. 0 turns the page off.' + VAR,
+			},
+			{
+				type: 'dropdown',
+				id: 'webBind',
+				label: 'Fader page available on',
+				width: 6,
+				default: 'all',
+				allowCustom: true,
+				tooltip:
+					"Which of this computer's network connections the page can be opened through, like Companion's own \"network interface\" setting. All = any of them. This computer only = just a browser on this computer. Or pick one connection. This is not a list of who may use the page: use the PIN for that. You can also type an address or a variable.",
+				choices: [
+					{ id: 'all', label: 'All network connections' },
+					{ id: 'local', label: 'This computer only (127.0.0.1)' },
+					...nets.map((n) => ({ id: n.address, label: `${n.name}: ${n.address}` })),
+				],
+			},
+			{
+				type: 'textinput',
+				id: 'pin',
+				label: 'Fader page PIN (blank = none)',
+				width: 3,
+				default: '',
+				tooltip: 'If set, the page asks for this PIN before showing anything or allowing changes.' + VAR,
+			},
+			{
+				type: 'textinput',
+				id: 'varRateHz',
+				label: 'Meter variables: updates per second (default 5)',
+				width: 3,
+				default: '5',
+				tooltip: 'How often the meter level variables update (1 to 20). Higher is smoother on buttons but busier.' + VAR,
+			},
+			{
+				type: 'textinput',
+				id: 'updateHours',
+				label: 'Check for module and OBS updates every (hours, default 12, 0 = never)',
+				width: 6,
+				default: '12',
+				tooltip: 'How often to check GitHub for a newer OBS Audio module and OBS. Needs internet access. 0 = never.' + VAR,
+			},
 		]
 	}
 
@@ -202,6 +365,19 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			{ variableId: 'obs_version', name: 'OBS: this version' },
 			{ variableId: 'obs_latest', name: 'OBS: latest version' },
 			{ variableId: 'obs_update', name: 'OBS: update available' },
+			{ variableId: 'obs_error', name: 'Why OBS is not connected (blank when connected)' },
+			{ variableId: 'page_url', name: 'Fader page address' },
+			{ variableId: 'page_urls', name: 'Fader page addresses (all network connections)' },
+			{ variableId: 'rec_state', name: 'Recording: recording / paused / stopped' },
+			{ variableId: 'rec_time', name: 'Recording: time so far' },
+			{ variableId: 'rec_next', name: 'Recording: next planned start (HH:MM)' },
+			{ variableId: 'rec_countdown', name: 'Recording: countdown to the next start' },
+			{ variableId: 'rec_auto', name: 'Recording: next start is automatic' },
+			{ variableId: 'rec_folder', name: 'Recording: folder' },
+			{ variableId: 'rec_files', name: 'Recording: files in the folder' },
+			{ variableId: 'solo', name: 'Input being soloed' },
+			{ variableId: 'notices', name: 'Pop-ups waiting' },
+			{ variableId: 'notice', name: 'Latest pop-up' },
 		]
 		this.engine.visible().forEach((inp, idx) => {
 			const n = idx + 1
@@ -224,6 +400,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				{ variableId: `${p}rms`, name: `${lab}: post-fader average dB` },
 				{ variableId: `${p}peak`, name: `${lab}: post-fader peak dB` },
 				{ variableId: `${p}pre`, name: `${lab}: pre-fader peak dB` },
+				{ variableId: `${p}pfl`, name: `${lab}: PFL on` },
+				{ variableId: `${p}backup_for`, name: `${lab}: is the backup for` },
+				{ variableId: `${p}on_backup`, name: `${lab}: switched to this backup` },
 			)
 			for (const f of inp.filters) {
 				const k = filterKind(f.kind)
@@ -246,6 +425,12 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			obs_version: ver.obsVersion ?? '',
 			obs_latest: ver.obsLatest ?? '',
 			obs_update: ver.obsUpdate,
+			obs_error: this.engine.connected ? '' : (this.engine.obs?.lastError ?? ''),
+			...this.#urlVariables(),
+			...this.#recordVariables(),
+			solo: this.engine.monitoring.solo ?? '',
+			notices: this.engine.notices.list.length,
+			notice: this.engine.notices.list.at(-1)?.title ?? '',
 		}
 		this.engine.visible().forEach((inp, idx) => {
 			const p = `in${idx + 1}_`
@@ -266,6 +451,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			v[`${p}rider_on`] = set.riderOn
 			v[`${p}target`] = rec?.target === null || rec?.target === undefined ? '' : rec.target.toFixed(1)
 			v[`${p}cal`] = set.calibrateDb
+			v[`${p}pfl`] = this.engine.monitoring.pflShown(inp)
+			v[`${p}backup_for`] = this.engine.backups.mainOf(inp)?.name ?? ''
+			v[`${p}on_backup`] = this.engine.backups.onBackup(inp.name)
 			for (const f of inp.filters) {
 				const k = filterKind(f.kind)
 				const fp = `${p}f_${slug(f.name)}_`
@@ -279,6 +467,28 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		return v
 	}
 
+	#recordVariables(): CompanionVariableValues {
+		const r = this.engine.recorder.state
+		const plan = this.engine.store.record
+		const cd = this.engine.recorder.countdown()
+		const fmt = (s: number) => {
+			const a = Math.abs(s)
+			const hh = Math.floor(a / 3600)
+			const mm = Math.floor((a % 3600) / 60)
+			const ss = a % 60
+			return `${s < 0 ? '-' : ''}${hh ? `${hh}:` : ''}${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
+		}
+		return {
+			rec_state: r.active ? (r.paused ? 'paused' : 'recording') : 'stopped',
+			rec_time: r.timecode ? r.timecode.split('.')[0] : '',
+			rec_next: plan.nextStart ? new Date(plan.nextStart).toTimeString().slice(0, 5) : '',
+			rec_countdown: cd === null ? '' : fmt(cd),
+			rec_auto: !!plan.nextStart && plan.autoStart,
+			rec_folder: r.directory,
+			rec_files: r.fileCount ?? '',
+		}
+	}
+
 	#meterVariables(): void {
 		const v: CompanionVariableValues = {}
 		const max = (a: Db[]) => a.reduce<Db>((m, x) => (x !== null && (m === null || x > m) ? x : m), null)
@@ -289,8 +499,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			v[`${p}peak`] = fmtDb(max(inp.postPeak))
 			v[`${p}pre`] = fmtDb(max(inp.prePeak))
 		})
+		Object.assign(v, this.#recordVariables())
 		this.setVariableValues(v)
-		this.checkFeedbacks('level_above', 'pickup_led')
+		this.checkFeedbacks('level_above', 'pickup_led', 'recording')
 	}
 
 	// ---- actions ------------------------------------------------------------------
@@ -692,6 +903,184 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					await e.setFilterSetting(inp, f.name, p.param.key, value)
 				},
 			},
+			pfl: {
+				name: 'Input: PFL (listen on OBS monitoring)',
+				description: "Uses OBS's monitoring (the headphone button in OBS's mixer). Never changes the stream or recording.",
+				options: [inputOption, { type: 'dropdown', label: 'PFL', id: 'mode', default: 'toggle', choices: onOffToggle }],
+				callback: async ({ options }, ctx) => {
+					const inp = await this.#input(options, ctx)
+					if (inp) await e.monitoring.setPfl(inp, flip(options.mode, e.monitoring.pflShown(inp)))
+				},
+			},
+			solo: {
+				name: 'Input: solo (hear only this input on monitoring)',
+				description:
+					'While soloed you hear only this input on monitoring; ending the solo puts every PFL back as it was. Never changes the stream or recording. For press-and-hold, put "On" in the press actions and "Off" in the release actions.',
+				options: [
+					inputOption,
+					{
+						type: 'dropdown',
+						label: 'Solo',
+						id: 'mode',
+						default: 'toggle',
+						choices: [
+							{ id: 'toggle', label: 'Toggle (latching)' },
+							{ id: 'on', label: 'On (e.g. on press)' },
+							{ id: 'off', label: 'Off (e.g. on release)' },
+						],
+					},
+				],
+				callback: async ({ options }, ctx) => {
+					const inp = await this.#input(options, ctx)
+					if (inp) await e.monitoring.setSolo(inp, flip(options.mode, e.monitoring.solo === inp.name))
+				},
+			},
+			backup_switch: {
+				name: 'Backup: switch between main and backup',
+				description: 'The input given is the backup feed (its "This is the backup for" setting names the main).',
+				options: [
+					{ ...inputOption, label: 'Backup input (name or number)' },
+					{
+						type: 'dropdown',
+						label: 'Switch to',
+						id: 'to',
+						default: 'toggle',
+						choices: [
+							{ id: 'toggle', label: 'Toggle' },
+							{ id: 'backup', label: 'The backup' },
+							{ id: 'main', label: 'The main' },
+						],
+					},
+				],
+				callback: async ({ options }, ctx) => {
+					const inp = await this.#input(options, ctx)
+					if (!inp) return
+					if (!e.backups.mainOf(inp)) return this.log('warn', `${inp.name} isn't set as a backup for another input`)
+					const toBackup = options.to === 'backup' || (options.to === 'toggle' && !e.backups.onBackup(inp.name))
+					if (toBackup) e.backups.switchToBackup(inp, 'it was switched by hand')
+					else e.backups.switchToMain(inp)
+				},
+			},
+			rider_all: {
+				name: 'Auto gain: every rider on / off',
+				options: [
+					{
+						type: 'dropdown',
+						label: 'Riders',
+						id: 'mode',
+						default: 'off',
+						choices: [
+							{ id: 'on', label: 'All on' },
+							{ id: 'off', label: 'All off' },
+						],
+					},
+				],
+				callback: ({ options }) => {
+					for (const inp of e.visible()) e.setInputSetting(inp.name, 'riderOn', options.mode === 'on')
+				},
+			},
+			record: {
+				name: 'Recording: start / stop / pause',
+				description: 'Stopping from a button happens straight away (the fader page asks twice first).',
+				options: [
+					{
+						type: 'dropdown',
+						label: 'Recording',
+						id: 'mode',
+						default: 'start',
+						choices: [
+							{ id: 'start', label: 'Start' },
+							{ id: 'stop', label: 'Stop' },
+							{ id: 'toggle', label: 'Toggle start / stop' },
+							{ id: 'pause', label: 'Pause' },
+							{ id: 'resume', label: 'Resume' },
+						],
+					},
+				],
+				callback: async ({ options }) => {
+					const r = e.recorder
+					try {
+						if (options.mode === 'start' || (options.mode === 'toggle' && !r.state.active)) await r.start()
+						else if (options.mode === 'stop' || options.mode === 'toggle') await r.stop()
+						else await r.pause(options.mode === 'pause')
+					} catch (err) {
+						this.log('warn', `Recording: ${(err as Error).message}`)
+					}
+				},
+			},
+			record_plan: {
+				name: 'Recording: plan the next start',
+				options: [
+					{ type: 'textinput', label: 'Time (HH:MM, today or tomorrow if already past; blank = clear the plan)', id: 'time', default: '', useVariables: true },
+					{ type: 'checkbox', label: 'Start recording automatically at that time', id: 'auto', default: false },
+				],
+				callback: async ({ options }, ctx) => {
+					const t = await this.#text(options, 'time', ctx)
+					if (!t) return e.recorder.setPlan(null, false)
+					const m = /^(\d{1,2}):(\d{2})$/.exec(t)
+					if (!m) return this.log('warn', `Recording plan: "${t}" isn't a time like 14:30`)
+					const d = new Date()
+					d.setHours(Number(m[1]), Number(m[2]), 0, 0)
+					if (d.getTime() < Date.now()) d.setDate(d.getDate() + 1)
+					e.recorder.setPlan(d.toISOString(), options.auto === true)
+				},
+			},
+			record_folder: {
+				name: 'Recording: set the folder',
+				options: [{ type: 'textinput', label: 'Folder (on the OBS computer)', id: 'dir', default: '', useVariables: true }],
+				callback: async ({ options }, ctx) => {
+					try {
+						await e.recorder.setDirectory(await this.#text(options, 'dir', ctx))
+					} catch (err) {
+						this.log('warn', `Recording folder: ${(err as Error).message}`)
+					}
+				},
+			},
+			record_name: {
+				name: 'Recording: set the file name',
+				description: "OBS's file name format. A prefix followed by OBS's date codes, e.g. Conference %CCYY-%MM-%DD %hh-%mm-%ss",
+				options: [
+					{ type: 'textinput', label: 'Prefix', id: 'prefix', default: '', useVariables: true },
+					{ type: 'textinput', label: 'Then (OBS date codes)', id: 'rest', default: '%CCYY-%MM-%DD %hh-%mm-%ss', useVariables: true },
+				],
+				callback: async ({ options }, ctx) => {
+					const prefix = await this.#text(options, 'prefix', ctx)
+					const rest = await this.#text(options, 'rest', ctx)
+					try {
+						await e.recorder.setFilenameFormat(prefix ? `${prefix} ${rest}` : rest)
+					} catch (err) {
+						this.log('warn', `Recording file name: ${(err as Error).message}`)
+					}
+				},
+			},
+			page_setting: {
+				name: 'Fader page: change a setting',
+				description: 'Any fader page setting (colours, layout, meters, PFL mode...). The same settings as on the page.',
+				options: [
+					{ type: 'dropdown', label: 'Setting', id: 'key', default: 'layout', choices: PAGE_SETTING_CHOICES },
+					{ type: 'textinput', label: 'Value', id: 'value', default: '', useVariables: true, tooltip: 'A number, true/false, a colour like #7a2fe0, or a choice (e.g. strips, rows, additive, exclusive).' },
+				],
+				callback: async ({ options }, ctx) => {
+					e.setPage(String(options.key) as keyof PageSettings, await this.#text(options, 'value', ctx))
+				},
+			},
+			notices_dismiss: {
+				name: 'Fader page: dismiss all pop-ups',
+				options: [],
+				callback: () => {
+					for (const n of [...e.notices.list]) void e.noticeAction(n.id, 'dismiss')
+				},
+			},
+			open_page: {
+				name: 'Fader page: open it on this computer',
+				description: 'Opens the fader page in the default web browser of the computer Companion runs on.',
+				options: [],
+				callback: () => {
+					const url = this.#pageUrls().find((u) => u.includes('127.0.0.1')) ?? this.#pageUrls()[0]
+					if (!url) return this.log('warn', 'The fader page is off (its port is 0)')
+					openInBrowser(url, (m) => this.log('warn', m))
+				},
+			},
 			check_updates: {
 				name: 'Check for module and OBS updates now',
 				options: [],
@@ -728,6 +1117,73 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					const c = parseColour(await this.#text(fb.options, `c_${inp.rider.state}`, ctx), undefined)
 					return c === undefined ? {} : { bgcolor: c }
 				},
+			},
+			pfl_on: {
+				type: 'boolean',
+				name: 'Input: PFL is on',
+				defaultStyle: { bgcolor: rgb(0, 120, 60), color: rgb(255, 255, 255) },
+				options: [inputOption],
+				callback: async (fb, ctx) => {
+					const inp = await inputFor(fb.options, ctx)
+					return !!inp && e.monitoring.pflShown(inp)
+				},
+			},
+			solo_on: {
+				type: 'boolean',
+				name: 'Input: soloed',
+				defaultStyle: { bgcolor: rgb(200, 150, 0), color: rgb(0, 0, 0) },
+				options: [inputOption],
+				callback: async (fb, ctx) => (await inputFor(fb.options, ctx))?.name === e.monitoring.solo,
+			},
+			on_backup: {
+				type: 'boolean',
+				name: 'Backup: switched to the backup',
+				defaultStyle: { bgcolor: rgb(200, 100, 0), color: rgb(255, 255, 255) },
+				options: [{ ...inputOption, label: 'Backup input (name or number)' }],
+				callback: async (fb, ctx) => {
+					const inp = await inputFor(fb.options, ctx)
+					return !!inp && e.backups.onBackup(inp.name)
+				},
+			},
+			recording: {
+				type: 'boolean',
+				name: 'Recording: is',
+				defaultStyle: { bgcolor: rgb(200, 0, 0), color: rgb(255, 255, 255) },
+				options: [
+					{
+						type: 'dropdown',
+						label: 'State',
+						id: 'state',
+						default: 'active',
+						choices: [
+							{ id: 'active', label: 'Recording (or paused)' },
+							{ id: 'paused', label: 'Paused' },
+							{ id: 'stopped', label: 'Stopped' },
+							{ id: 'due', label: 'Due to start (a start time is planned)' },
+						],
+					},
+				],
+				callback: (fb) => {
+					const r = e.recorder.state
+					if (fb.options.state === 'paused') return r.active && r.paused
+					if (fb.options.state === 'stopped') return !r.active
+					if (fb.options.state === 'due') return !r.active && !!e.store.record.nextStart
+					return r.active
+				},
+			},
+			notice_active: {
+				type: 'boolean',
+				name: 'Fader page: a pop-up is waiting',
+				defaultStyle: { bgcolor: rgb(200, 100, 0), color: rgb(255, 255, 255) },
+				options: [],
+				callback: () => e.notices.list.length > 0,
+			},
+			connected: {
+				type: 'boolean',
+				name: 'Connected to OBS',
+				defaultStyle: { bgcolor: rgb(0, 120, 60), color: rgb(255, 255, 255) },
+				options: [],
+				callback: () => e.connected,
 			},
 			update_available: {
 				type: 'boolean',
@@ -891,65 +1347,118 @@ class ObsAudioInstance extends InstanceBase<Config> {
 	#presets(): CompanionPresetDefinitions {
 		const presets: CompanionPresetDefinitions = {}
 		const white = rgb(255, 255, 255)
+		const purple = rgb(85, 0, 170)
+		const L = this.label
+		const button = (
+			id: string,
+			category: string,
+			name: string,
+			text: string,
+			down: { actionId: string; options: CompanionOptionValues }[],
+			feedbacks: { feedbackId: string; options: CompanionOptionValues; style?: { bgcolor?: number; color?: number } }[] = [],
+			up: { actionId: string; options: CompanionOptionValues }[] = [],
+		) => {
+			presets[id] = {
+				type: 'button',
+				category,
+				name,
+				style: { text, size: 'auto', color: white, bgcolor: BLACK },
+				steps: [{ down, up }],
+				feedbacks,
+			}
+		}
+
+		// overall
+		const all = 'OBS Audio'
+		button('open_page', all, 'Open the fader page (on this computer)', 'FADER\\nPAGE', [{ actionId: 'open_page', options: {} }])
+		button('page_url', all, 'Fader page address', '$(' + L + ':page_url)', [], [])
+		button('connected', all, 'OBS connection', 'OBS', [], [{ feedbackId: 'connected', options: {}, style: { bgcolor: rgb(0, 120, 60) } }])
+		button('update', all, 'Update available', 'UPDATE', [{ actionId: 'open_page', options: {} }], [{ feedbackId: 'update_available', options: { which: 'either' }, style: { bgcolor: purple } }])
+		button('riders_on', all, 'All riders on', 'ALL\\nRIDERS\\nON', [{ actionId: 'rider_all', options: { mode: 'on' } }])
+		button('riders_off', all, 'All riders off', 'ALL\\nRIDERS\\nOFF', [{ actionId: 'rider_all', options: { mode: 'off' } }])
+		button('record', all, 'Record start / stop', 'REC\\n$(' + L + ':rec_time)', [{ actionId: 'record', options: { mode: 'toggle' } }], [
+			{ feedbackId: 'recording', options: { state: 'active' }, style: { bgcolor: rgb(200, 0, 0) } },
+			{ feedbackId: 'recording', options: { state: 'paused' }, style: { bgcolor: rgb(150, 100, 0) } },
+		])
+		button('record_next', all, 'Next recording start and countdown', 'NEXT REC\\n$(' + L + ':rec_next)\\n$(' + L + ':rec_countdown)', [], [
+			{ feedbackId: 'recording', options: { state: 'due' }, style: { bgcolor: purple } },
+		])
+		button('notices', all, 'Pop-ups waiting (press to dismiss all)', 'POP-UPS\\n$(' + L + ':notices)', [{ actionId: 'notices_dismiss', options: {} }], [
+			{ feedbackId: 'notice_active', options: {}, style: { bgcolor: rgb(200, 100, 0) } },
+		])
+
 		this.engine.visible().forEach((inp, idx) => {
 			const n = idx + 1
+			const i = String(n)
 			const category = `Input ${n}: ${inp.name}`
-			const name = `$(${this.label}:in${n}_name)`
-			presets[`ag_${n}`] = {
-				type: 'button',
+			const name = `$(${L}:in${n}_name)`
+			button(
+				`ag_${n}`,
 				category,
-				name: 'Auto gain button',
-				style: { text: `${name}\\nAG $(${this.label}:in${n}_target)`, size: 'auto', color: white, bgcolor: BLACK },
-				steps: [
-					{
-						down: [{ actionId: 'ag_button', options: { input: String(n), edge: 'down' } }],
-						up: [{ actionId: 'ag_button', options: { input: String(n), edge: 'up' } }],
-					},
-				],
-				feedbacks: [
-					{
-						feedbackId: 'rider_status',
-						options: { input: String(n), ...Object.fromEntries(RIDER_STATES.map((s) => [`c_${s.id}`, STATUS_COLOURS[s.id]])) },
-					},
-				],
-			}
-			presets[`rider_${n}`] = {
-				type: 'button',
+				'Auto gain button: press = this level, double tap = calibrate, hold = calibrate to module level',
+				`${name}\\nAG $(${L}:in${n}_target)`,
+				[{ actionId: 'ag_button', options: { input: i, edge: 'down' } }],
+				[{ feedbackId: 'rider_status', options: { input: i, ...Object.fromEntries(RIDER_STATES.map((st) => [`c_${st.id}`, STATUS_COLOURS[st.id]])) } }],
+				[{ actionId: 'ag_button', options: { input: i, edge: 'up' } }],
+			)
+			button(`rider_${n}`, category, 'Rider on / off', `${name}\\nRIDER`, [{ actionId: 'ag_rider', options: { input: i, mode: 'toggle' } }], [
+				{ feedbackId: 'rider_on', options: { input: i }, style: { bgcolor: purple, color: white } },
+			])
+			button(`status_${n}`, category, 'Rider status and target', `${name}\\n$(${L}:in${n}_rider)\\n$(${L}:in${n}_target)`, [], [
+				{ feedbackId: 'rider_status', options: { input: i, ...Object.fromEntries(RIDER_STATES.map((st) => [`c_${st.id}`, STATUS_COLOURS[st.id]])) } },
+			])
+			button(`capture_${n}`, category, 'This level please', `${name}\\nTHIS\\nLEVEL`, [{ actionId: 'ag_capture', options: { input: i } }])
+			button(`cal_${n}`, category, "Calibrate to the input's level", `${name}\\nCAL\\n$(${L}:in${n}_cal)`, [{ actionId: 'ag_calibrate', options: { input: i, to: 'input' } }])
+			button(`calm_${n}`, category, 'Calibrate to the module level', `${name}\\nCAL\\nMODULE`, [{ actionId: 'ag_calibrate', options: { input: i, to: 'module' } }])
+			button(`mute_${n}`, category, 'Mute', `${name}\\nMUTE`, [{ actionId: 'mute', options: { input: i, mode: 'toggle' } }], [
+				{ feedbackId: 'muted', options: { input: i }, style: { bgcolor: rgb(200, 0, 0), color: white } },
+			])
+			button(`pfl_${n}`, category, 'PFL', `${name}\\nPFL`, [{ actionId: 'pfl', options: { input: i, mode: 'toggle' } }], [
+				{ feedbackId: 'pfl_on', options: { input: i }, style: { bgcolor: rgb(0, 120, 60), color: white } },
+			])
+			button(
+				`solo_${n}`,
 				category,
-				name: 'Rider on / off',
-				style: { text: `${name}\\nRIDER`, size: 'auto', color: white, bgcolor: BLACK },
-				steps: [{ down: [{ actionId: 'ag_rider', options: { input: String(n), mode: 'toggle' } }], up: [] }],
-				feedbacks: [{ feedbackId: 'rider_on', options: { input: String(n) }, style: { bgcolor: rgb(85, 0, 170), color: white } }],
+				'Solo (hold)',
+				`${name}\\nSOLO`,
+				[{ actionId: 'solo', options: { input: i, mode: 'on' } }],
+				[{ feedbackId: 'solo_on', options: { input: i }, style: { bgcolor: rgb(200, 150, 0), color: BLACK } }],
+				[{ actionId: 'solo', options: { input: i, mode: 'off' } }],
+			)
+			button(`solol_${n}`, category, 'Solo (latching)', `${name}\\nSOLO\\nLATCH`, [{ actionId: 'solo', options: { input: i, mode: 'toggle' } }], [
+				{ feedbackId: 'solo_on', options: { input: i }, style: { bgcolor: rgb(200, 150, 0), color: BLACK } },
+			])
+			button(`level_${n}`, category, 'Level readout', `${name}\\n$(${L}:in${n}_vol) dB\\n$(${L}:in${n}_peak)`, [], [
+				{ feedbackId: 'level_above', options: { input: i, meter: 'peak', db: '-18' }, style: { bgcolor: rgb(0, 100, 0) } },
+				{ feedbackId: 'level_above', options: { input: i, meter: 'peak', db: '-6' }, style: { bgcolor: rgb(150, 120, 0) } },
+				{ feedbackId: 'level_above', options: { input: i, meter: 'peak', db: '-1' }, style: { bgcolor: rgb(200, 0, 0) } },
+			])
+			for (const [id, label, mode, db] of [
+				['up1', '+1 dB', 'adjust', '1'],
+				['dn1', '-1 dB', 'adjust', '-1'],
+				['up3', '+3 dB', 'adjust', '3'],
+				['dn3', '-3 dB', 'adjust', '-3'],
+				['unity', '0 dB', 'set', '0'],
+			]) {
+				button(`fader_${id}_${n}`, category, `Fader ${label}`, `${name}\\nFADER\\n${label}`, [{ actionId: 'volume', options: { input: i, mode, db, fade: '0' } }])
 			}
-			presets[`mute_${n}`] = {
-				type: 'button',
-				category,
-				name: 'Mute',
-				style: { text: `${name}\\nMUTE`, size: 'auto', color: white, bgcolor: BLACK },
-				steps: [{ down: [{ actionId: 'mute', options: { input: String(n), mode: 'toggle' } }], up: [] }],
-				feedbacks: [{ feedbackId: 'muted', options: { input: String(n) }, style: { bgcolor: rgb(200, 0, 0), color: white } }],
-			}
-			presets[`level_${n}`] = {
-				type: 'button',
-				category,
-				name: 'Level readout',
-				style: { text: `${name}\\n$(${this.label}:in${n}_vol) dB\\n$(${this.label}:in${n}_peak)`, size: 'auto', color: white, bgcolor: BLACK },
-				steps: [{ down: [], up: [] }],
-				feedbacks: [
-					{ feedbackId: 'level_above', options: { input: String(n), meter: 'peak', db: '-18' }, style: { bgcolor: rgb(0, 100, 0) } },
-					{ feedbackId: 'level_above', options: { input: String(n), meter: 'peak', db: '-6' }, style: { bgcolor: rgb(150, 120, 0) } },
-					{ feedbackId: 'level_above', options: { input: String(n), meter: 'peak', db: '-1' }, style: { bgcolor: rgb(200, 0, 0) } },
-				],
-			}
+			button(`trim_up_${n}`, category, 'Trim +1 dB', `${name}\\nTRIM\\n+1 dB`, [{ actionId: 'trim', options: { input: i, mode: 'adjust', db: '1' } }])
+			button(`trim_dn_${n}`, category, 'Trim -1 dB', `${name}\\nTRIM\\n-1 dB`, [{ actionId: 'trim', options: { input: i, mode: 'adjust', db: '-1' } }])
 			for (let t = 1; t <= 6; t++) {
-				presets[`track_${n}_${t}`] = {
-					type: 'button',
-					category,
-					name: `Track ${t}`,
-					style: { text: `${name}\\nTRK ${t}`, size: 'auto', color: white, bgcolor: BLACK },
-					steps: [{ down: [{ actionId: 'tracks', options: { input: String(n), tracks: String(t), mode: 'toggle' } }], up: [] }],
-					feedbacks: [{ feedbackId: 'track_on', options: { input: String(n), track: String(t) }, style: { bgcolor: rgb(85, 0, 170), color: white } }],
-				}
+				button(`track_${n}_${t}`, category, `Track ${t}`, `${name}\\nTRK ${t}`, [{ actionId: 'tracks', options: { input: i, tracks: String(t), mode: 'toggle' } }], [
+					{ feedbackId: 'track_on', options: { input: i, track: String(t) }, style: { bgcolor: purple, color: white } },
+				])
+			}
+			for (const f of inp.filters) {
+				if (f.name === this.engine.settings(inp.name).trimFilterName) continue
+				button(`filter_${n}_${slug(f.name)}`, category, `${f.name} on / off`, `${name}\\n${f.name.toUpperCase()}`, [
+					{ actionId: 'filter_enable', options: { input: i, filter: f.name, mode: 'toggle' } },
+				], [{ feedbackId: 'filter_on', options: { input: i, filter: f.name }, style: { bgcolor: rgb(0, 120, 60), color: white } }])
+			}
+			if (this.engine.backups.mainOf(inp)) {
+				button(`backup_${n}`, category, 'Switch between main and this backup', `${name}\\nBACKUP`, [{ actionId: 'backup_switch', options: { input: i, to: 'toggle' } }], [
+					{ feedbackId: 'on_backup', options: { input: i }, style: { bgcolor: rgb(200, 100, 0), color: white } },
+				])
 			}
 		})
 		return presets

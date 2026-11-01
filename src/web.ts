@@ -150,33 +150,82 @@ export class WebServer {
 			case 'volume': {
 				const db = c.db === null ? null : Number(c.db)
 				if (db !== null && Number.isNaN(db)) throw new Error('Bad level')
-				e.setVolume(input(), db)
+				const inp = input()
+				e.setVolume(inp, db)
+				e.recordable('volume', { input: inp.name, mode: 'set', db: db === null ? '-inf' : db.toFixed(1), fade: '0' }, `vol:${inp.name}`)
 				return
 			}
+			case 'pfl':
+				return void (await e.monitoring.setPfl(input(), !!c.value))
+			case 'solo':
+				return void (await e.monitoring.setSolo(input(), !!c.value))
+			case 'notice':
+				return (await e.noticeAction(String(c.id), String(c.action))) ?? undefined
+			case 'backupSwitch': {
+				const inp = input()
+				if (c.to === 'main') e.backups.switchToMain(inp)
+				else e.backups.switchToBackup(inp, 'it was switched by hand')
+				return
+			}
+			case 'recordStart':
+				return void (await e.recorder.start())
+			case 'recordStop':
+				return void (await e.recorder.stop())
+			case 'recordPause':
+				return void (await e.recorder.pause(!!c.value))
+			case 'recordPlan':
+				e.recorder.setPlan(c.nextStart ? String(c.nextStart) : null, !!c.autoStart)
+				return
+			case 'recordFolder':
+				return void (await e.recorder.setDirectory(String(c.value ?? '')))
+			case 'recordFormat':
+				return void (await e.recorder.setFilenameFormat(String(c.value ?? '')))
 			case 'touch':
 				e.touch(input(), !!c.value)
 				return
-			case 'mute':
-				return void (await e.setMute(input(), !!c.value))
-			case 'balance':
-				return void (await e.setBalance(input(), Number(c.value)))
-			case 'sync':
-				return void (await e.setSync(input(), Number(c.value)))
+			case 'mute': {
+				const inp = input()
+				e.recordable('mute', { input: inp.name, mode: c.value ? 'on' : 'off' }, `mute:${inp.name}`)
+				return void (await e.setMute(inp, !!c.value))
+			}
+			case 'balance': {
+				const inp = input()
+				e.recordable('balance', { input: inp.name, mode: 'set', value: String(Math.round((Number(c.value) - 0.5) * 200)) }, `bal:${inp.name}`)
+				return void (await e.setBalance(inp, Number(c.value)))
+			}
+			case 'sync': {
+				const inp = input()
+				e.recordable('sync', { input: inp.name, mode: 'set', value: String(Number(c.value)) }, `sync:${inp.name}`)
+				return void (await e.setSync(inp, Number(c.value)))
+			}
 			case 'monitor':
 				return void (await e.setMonitor(input(), String(c.value) as MonitorType))
-			case 'track':
-				return void (await e.setTracks(input(), { [String(c.track)]: !!c.value }))
-			case 'trim':
-				e.setTrim(input(), Number(c.value))
+			case 'track': {
+				const inp = input()
+				e.recordable('tracks', { input: inp.name, tracks: String(c.track), mode: c.value ? 'on' : 'off' }, `tracks:${inp.name}:${String(c.track)}`)
+				return void (await e.setTracks(inp, { [String(c.track)]: !!c.value }))
+			}
+			case 'trim': {
+				const inp = input()
+				e.setTrim(inp, Number(c.value))
+				e.recordable('trim', { input: inp.name, mode: 'set', db: String(Number(c.value)) }, `trim:${inp.name}`)
 				return
+			}
 			case 'filterAdd':
 				return void (await e.addFilter(input(), String(c.kind), String(c.name ?? '')))
 			case 'filterRemove':
 				return void (await e.removeFilter(input(), String(c.filter)))
-			case 'filterEnable':
-				return void (await e.setFilterEnabled(input(), String(c.filter), !!c.value))
-			case 'filterSet':
-				return void (await e.setFilterSetting(input(), String(c.filter), String(c.key), c.value))
+			case 'filterEnable': {
+				const inp = input()
+				e.recordable('filter_enable', { input: inp.name, filter: String(c.filter), mode: c.value ? 'on' : 'off' }, `fon:${inp.name}:${String(c.filter)}`)
+				return void (await e.setFilterEnabled(inp, String(c.filter), !!c.value))
+			}
+			case 'filterSet': {
+				const inp = input()
+				const f = inp.filters.find((x) => x.name === String(c.filter))
+				if (f) e.recordable('filter_set', { input: inp.name, param: `${f.kind}:${String(c.key)}`, filter: f.name, mode: 'set', value: String(c.value) }, `f:${inp.name}:${f.name}:${String(c.key)}`)
+				return void (await e.setFilterSetting(inp, String(c.filter), String(c.key), c.value))
+			}
 			case 'rider':
 				e.setInputSetting(input().name, 'riderOn', !!c.value)
 				return

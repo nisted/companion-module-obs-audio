@@ -9,6 +9,7 @@ import { Engine } from '../src/engine.js'
 import { WebServer } from '../src/web.js'
 import { FakeObs } from './fake-obs.js'
 import { compareVersions, newVersionInfo, pickNewest, recompute } from '../src/updates.js'
+import { explainClose } from '../src/obs.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const mul = (db: number) => Math.pow(10, db / 20)
@@ -360,4 +361,102 @@ test('version compare and update flags', () => {
 test('newest module release includes pre-releases, skips drafts', () => {
 	assert.equal(pickNewest([{ tag_name: 'v0.1.1' }, { tag_name: 'v0.2.0', draft: true }, { tag_name: 'v0.1.3' }]), '0.1.3')
 	assert.equal(pickNewest([]), null)
+})
+
+test('connection errors are explained in plain words', () => {
+	assert.match(explainClose(4009, '', 'h', 4455, false), /password is wrong/)
+	assert.match(explainClose(1006, '', '10.0.0.5', 4455, false), /Enable WebSocket server/)
+	assert.match(explainClose(1006, '', '10.0.0.5', 4455, true), /Lost the connection/)
+})
+
+test('PFL, solo, backup switch and recording against a pretend OBS', async () => {
+	const obs = new FakeObs()
+	obs.addInput('Mic', -24)
+	obs.addInput('Mic Backup', -24)
+	obs.addInput('Music', -12)
+	const logs: string[] = []
+	const engine = new Engine({ log: (l, m) => logs.push(`${l}: ${m}`), save: () => {}, structureChanged: () => {}, stateChanged: () => {} }, undefined, '')
+	engine.connect('127.0.0.1', obs.port, '')
+	for (let i = 0; i < 50 && engine.visible().length < 3; i++) await sleep(50)
+	const mic = engine.resolve('Mic')!
+	const music = engine.resolve('Music')!
+	const backup = engine.resolve('Mic Backup')!
+	const mon = (n: string) => obs.input(n).monitor
+
+	// PFL additive, then exclusive
+	await engine.monitoring.setPfl(mic, true)
+	await engine.monitoring.setPfl(music, true)
+	await sleep(100)
+	assert.equal(mon('Mic'), 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT')
+	assert.equal(mon('Music'), 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT')
+	engine.setPage('pflMode', 'exclusive')
+	await engine.monitoring.setPfl(mic, true)
+	await sleep(100)
+	assert.equal(mon('Music'), 'OBS_MONITORING_TYPE_NONE')
+	engine.setPage('pflMode', 'additive')
+	await engine.monitoring.setPfl(music, true)
+	await sleep(100)
+
+	// solo: only Music on monitoring; on release both PFLs come back
+	await engine.monitoring.setSolo(music, true)
+	await sleep(100)
+	assert.equal(mon('Mic'), 'OBS_MONITORING_TYPE_NONE')
+	assert.equal(mon('Music'), 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT')
+	assert.equal(engine.monitoring.pflShown(mic), true)
+	await engine.monitoring.setSolo(music, false)
+	await sleep(100)
+	assert.equal(mon('Mic'), 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT')
+	assert.equal(mon('Music'), 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT')
+	assert.equal(obs.input('Mic').muted, false)
+
+	// backup: main drops out, auto crossfade, never back by itself, then Take
+	engine.setInputSetting('Mic Backup', 'backupOf', 'Mic')
+	engine.setInputSetting('Mic Backup', 'backupAuto', true)
+	engine.setInputSetting('Mic Backup', 'backupDetectMs', 300)
+	engine.setInputSetting('Mic Backup', 'backupRecoverMs', 400)
+	engine.setInputSetting('Mic Backup', 'backupFadeMs', 100)
+	await sleep(600)
+	assert.equal(engine.backups.onBackup('Mic Backup'), false)
+	obs.input('Mic').signalDb = null
+	await sleep(1200)
+	assert.equal(engine.backups.onBackup('Mic Backup'), true)
+	assert.ok(obs.input('Mic').volMul < 0.01, `main faded out: ${obs.input('Mic').volMul}`)
+	assert.ok(Math.abs(obs.input('Mic Backup').volMul - 1) < 0.01, 'backup up at the main level')
+	assert.ok(engine.notices.list.some((n) => n.kind === 'backup-switched'))
+	obs.input('Mic').signalDb = -24
+	await sleep(1500)
+	assert.equal(engine.backups.onBackup('Mic Backup'), true, 'stays on backup')
+	const back = engine.notices.list.find((n) => n.kind === 'backup-back')
+	assert.ok(back, 'asks about the main coming back')
+	await engine.noticeAction(back!.id, 'take')
+	await sleep(400)
+	assert.equal(engine.backups.onBackup('Mic Backup'), false)
+	assert.ok(Math.abs(obs.input('Mic').volMul - 1) < 0.01, 'main back up')
+	void backup
+
+	// recording: start, stop, plan, reminder, snooze, file name
+	await engine.recorder.start()
+	await sleep(100)
+	assert.equal(engine.recorder.state.active, true)
+	await engine.recorder.stop()
+	await sleep(100)
+	assert.equal(engine.recorder.state.active, false)
+	assert.ok(engine.recorder.state.lastFile.endsWith('.mkv'))
+	engine.recorder.setPlan(new Date(Date.now() + 5 * 60000).toISOString(), false)
+	await sleep(1300)
+	const due = engine.notices.list.find((n) => n.kind === 'record-due')
+	assert.ok(due, 'reminder shows inside the lead time')
+	assert.ok(engine.recorder.countdown()! > 250)
+	await engine.noticeAction(due!.id, 'snooze')
+	assert.ok(!engine.notices.list.some((n) => n.kind === 'record-due'))
+	await engine.recorder.setFilenameFormat('Conf %CCYY-%MM-%DD')
+	assert.equal(obs.rec.format, 'Conf %CCYY-%MM-%DD')
+	engine.recorder.setPlan(new Date(Date.now() - 1000).toISOString(), true)
+	await sleep(1300)
+	assert.equal(obs.rec.active, true, 'auto start fired')
+	assert.equal(engine.store.record.nextStart, null, 'a start clears the plan')
+
+	engine.destroy()
+	obs.close()
+	assert.ok(!logs.some((l) => l.startsWith('error')), logs.join('\n'))
 })

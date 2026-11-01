@@ -14,6 +14,7 @@ import { PickupManager } from './pickup.js'
 import { GestureReader, type Gesture } from './gesture.js'
 import { latestRelease, newestRelease, newVersionInfo, recompute, MODULE_REPO, OBS_REPO, type VersionInfo } from './updates.js'
 import { MODULE_VERSION } from './version.js'
+import { Backups, Monitoring, Notices, Recorder, type FeatureHost } from './features.js'
 import {
 	type Store,
 	type InputSettings,
@@ -112,6 +113,12 @@ export class Engine extends EventEmitter {
 	readonly pickup: PickupManager
 	readonly gestures: GestureReader
 	versions: VersionInfo = newVersionInfo(MODULE_VERSION)
+	readonly notices: Notices
+	readonly monitoring: Monitoring
+	readonly backups: Backups
+	readonly recorder: Recorder
+	/** Things this module just set in OBS, so the echo isn't taken for someone else's change */
+	#self = new Map<string, number>()
 	#updateTimer: NodeJS.Timeout | null = null
 
 	constructor(host: EngineHost, storeJson: unknown, autosave: string) {
@@ -131,6 +138,44 @@ export class Engine extends EventEmitter {
 			(name, g) => this.#gesture(name, g),
 		)
 		this.#tick = setInterval(() => this.pickup.tick(), 125)
+		const fh: FeatureHost = {
+			inputs: this.inputs,
+			settings: (n) => this.settings(n),
+			setMonitor: (i, m) => this.setMonitor(i, m),
+			fadeTo: (i, db, ms) => this.fadeTo(i, db, ms),
+			setInputSetting: (n, k, v) => this.setInputSetting(n, k, v),
+			call: <T>(req: string, data?: Record<string, unknown>) => {
+				if (!this.obs?.connected) return Promise.reject(new Error('Not connected to OBS'))
+				return this.obs.call<T>(req, data)
+			},
+			connected: () => this.connected,
+			pflMode: () => this.store.page.pflMode,
+			plan: () => this.store.record,
+			savePlan: () => this.#dirty(),
+			recordLeadMin: () => this.store.page.recordLeadMin,
+			recordSnoozeMin: () => this.store.page.recordSnoozeMin,
+			log: (l, m) => this.host.log(l, m),
+			changed: () => this.#stateChanged(),
+		}
+		this.notices = new Notices(() => this.#stateChanged())
+		this.monitoring = new Monitoring(fh)
+		this.backups = new Backups(fh, this.notices)
+		this.recorder = new Recorder(fh, this.notices)
+	}
+
+	/** Note something this module is about to set in OBS */
+	#mark(key: string): void {
+		this.#self.set(key, Date.now())
+	}
+
+	#wasSelf(key: string): boolean {
+		const t = this.#self.get(key)
+		return t !== undefined && Date.now() - t < 1500
+	}
+
+	/** Tell Companion's action recorder about a change made by hand (page or OBS itself) */
+	recordable(actionId: string, options: Record<string, unknown>, key: string): void {
+		this.emit('recordable', actionId, options, key)
 	}
 
 	get law(): LawSettings {
@@ -143,6 +188,7 @@ export class Engine extends EventEmitter {
 
 	destroy(): void {
 		clearInterval(this.#tick)
+		this.recorder.destroy()
 		if (this.#updateTimer) clearInterval(this.#updateTimer)
 		for (const t of this.#fades.values()) clearInterval(t)
 		this.#fades.clear()
@@ -161,6 +207,7 @@ export class Engine extends EventEmitter {
 			this.host.log('info', `Connected to OBS at ${host}:${port}`)
 			void this.refreshAll()
 			void this.#readObsVersion()
+			void this.recorder.refresh()
 		})
 		obs.on('disconnected', (reason: string, was: boolean) => {
 			if (was) this.host.log('warn', `Disconnected from OBS: ${reason}`)
@@ -443,25 +490,54 @@ export class Engine extends EventEmitter {
 				if (inp) this.#onVolume(inp, mulToDb(Number(d.inputVolumeMul)))
 				return
 			case 'InputMuteStateChanged':
-				if (inp) inp.muted = !!d.inputMuted
+				if (inp) {
+					inp.muted = !!d.inputMuted
+					if (!this.#wasSelf(`mute:${name}`)) this.recordable('mute', { input: name, mode: inp.muted ? 'on' : 'off' }, `mute:${name}`)
+				}
 				break
 			case 'InputAudioBalanceChanged':
-				if (inp) inp.balance = Number(d.inputAudioBalance)
+				if (inp) {
+					inp.balance = Number(d.inputAudioBalance)
+					if (!this.#wasSelf(`bal:${name}`)) this.recordable('balance', { input: name, mode: 'set', value: String(Math.round((inp.balance - 0.5) * 200)) }, `bal:${name}`)
+				}
 				break
 			case 'InputAudioSyncOffsetChanged':
-				if (inp) inp.syncMs = Number(d.inputAudioSyncOffset)
+				if (inp) {
+					inp.syncMs = Number(d.inputAudioSyncOffset)
+					if (!this.#wasSelf(`sync:${name}`)) this.recordable('sync', { input: name, mode: 'set', value: String(inp.syncMs) }, `sync:${name}`)
+				}
 				break
 			case 'InputAudioTracksChanged':
-				if (inp) inp.tracks = (d.inputAudioTracks as Record<string, boolean>) ?? {}
+				if (inp) {
+					const before = inp.tracks
+					inp.tracks = (d.inputAudioTracks as Record<string, boolean>) ?? {}
+					if (!this.#wasSelf(`tracks:${name}`)) {
+						for (const [t, on] of Object.entries(inp.tracks)) {
+							if (before[t] !== on) this.recordable('tracks', { input: name, tracks: t, mode: on ? 'on' : 'off' }, `tracks:${name}:${t}`)
+						}
+					}
+				}
 				break
 			case 'InputAudioMonitorTypeChanged':
-				if (inp) inp.monitor = monitorFromObs(d.monitorType)
+				if (inp) {
+					inp.monitor = monitorFromObs(d.monitorType)
+					if (!this.#wasSelf(`mon:${name}`)) this.recordable('monitor', { input: name, value: inp.monitor, toggleTo: 'both' }, `mon:${name}`)
+				}
 				break
+			case 'RecordStateChanged':
+				this.recorder.onEvent(d)
+				return
 			case 'SourceFilterSettingsChanged': {
 				const f = inp?.filters.find((x) => x.name === d.filterName)
 				if (inp && f) {
 					const before = inp.trimDb
+					const old = { ...f.settings }
 					Object.assign(f.settings, (d.filterSettings as Record<string, unknown>) ?? {})
+					if (!this.#wasSelf(`f:${name}:${f.name}`) && f.name !== this.settings(inp.name).trimFilterName) {
+						for (const [k, v] of Object.entries(f.settings)) {
+							if (old[k] !== v) this.recordable('filter_set', { input: name, param: `${f.kind}:${k}`, filter: f.name, mode: 'set', value: String(v) }, `f:${name}:${f.name}:${k}`)
+						}
+					}
 					this.#updateTrim(inp)
 					if (f.name === this.settings(inp.name).trimFilterName) this.#onTrimEcho(inp, before)
 				}
@@ -472,6 +548,7 @@ export class Engine extends EventEmitter {
 				if (inp && f) {
 					f.enabled = !!d.filterEnabled
 					this.#updateTrim(inp)
+					if (!this.#wasSelf(`fon:${name}:${f.name}`)) this.recordable('filter_enable', { input: name, filter: f.name, mode: f.enabled ? 'on' : 'off' }, `fon:${name}:${f.name}`)
 				}
 				break
 			}
@@ -530,6 +607,7 @@ export class Engine extends EventEmitter {
 				this.#fades.delete(inp.name)
 			}
 			if (this.settings(inp.name).controlMode === 'fader') inp.rider.manualMove(old, db)
+			this.recordable('volume', { input: inp.name, mode: 'set', db: db === null ? '-inf' : db.toFixed(1), fade: '0' }, `vol:${inp.name}`)
 		}
 		this.#stateChanged()
 	}
@@ -558,6 +636,7 @@ export class Engine extends EventEmitter {
 				muted: inp.muted,
 			})
 		}
+		this.backups.check(t)
 		this.emit('meters')
 	}
 
@@ -677,6 +756,54 @@ export class Engine extends EventEmitter {
 		this.#fades.set(inp.name, timer)
 	}
 
+	/** An automatic move (backup switch): glide there, not counted as a hand move */
+	fadeTo(inp: InputInfo, db: Db, ms: number): void {
+		const existing = this.#fades.get(inp.name)
+		if (existing) clearInterval(existing)
+		this.#fades.delete(inp.name)
+		const from = inp.volumeDb ?? -60
+		const to = db ?? -60
+		if (ms <= 0) {
+			void this.#sendVolume(inp, db)
+			return
+		}
+		const start = Date.now()
+		const timer = setInterval(() => {
+			const f = Math.min(1, (Date.now() - start) / ms)
+			void this.#sendVolume(inp, f >= 1 ? db : from + (to - from) * f)
+			if (f >= 1) {
+				clearInterval(timer)
+				this.#fades.delete(inp.name)
+			}
+		}, 40)
+		this.#fades.set(inp.name, timer)
+	}
+
+	/** Act on a pop-up's button */
+	async noticeAction(id: string, action: string): Promise<string | void> {
+		const n = this.notices.get(id)
+		if (!n) return
+		const backup = n.input ? this.inputs.get(n.input) : undefined
+		if (action === 'dismiss') {
+			this.notices.remove(id)
+			if (n.kind === 'record-due') this.recorder.dismissPrompt()
+			return
+		}
+		if (n.kind === 'backup-back' && backup) {
+			if (action === 'take') this.backups.switchToMain(backup)
+			else if (action === 'snooze') this.backups.snooze(backup)
+			else if (action === 'swap') this.backups.swap(backup)
+			return
+		}
+		if (n.kind === 'record-due') {
+			if (action === 'start') {
+				await this.recorder.start()
+				this.notices.remove(id)
+			} else if (action === 'snooze') this.recorder.snoozePrompt()
+			// 'newtime' is handled on the page, which then sets a new plan
+		}
+	}
+
 	setTrim(inp: InputInfo, db: number): void {
 		if (this.settings(inp.name).controlMode === 'trim') inp.rider.manualMove(inp.trimDb, db)
 		void this.#sendTrim(inp, db)
@@ -687,30 +814,35 @@ export class Engine extends EventEmitter {
 	}
 
 	setMute(inp: InputInfo, muted: boolean): Promise<void> {
+		this.#mark(`mute:${inp.name}`)
 		inp.muted = muted
 		this.#stateChanged()
 		return this.#call('SetInputMute', { inputName: inp.name, inputMuted: muted })
 	}
 
 	setBalance(inp: InputInfo, balance: number): Promise<void> {
+		this.#mark(`bal:${inp.name}`)
 		inp.balance = clamp(balance, 0, 1)
 		this.#stateChanged()
 		return this.#call('SetInputAudioBalance', { inputName: inp.name, inputAudioBalance: inp.balance })
 	}
 
 	setSync(inp: InputInfo, ms: number): Promise<void> {
+		this.#mark(`sync:${inp.name}`)
 		inp.syncMs = Math.round(clamp(ms, -950, 20000))
 		this.#stateChanged()
 		return this.#call('SetInputAudioSyncOffset', { inputName: inp.name, inputAudioSyncOffset: inp.syncMs })
 	}
 
 	setMonitor(inp: InputInfo, m: MonitorType): Promise<void> {
+		this.#mark(`mon:${inp.name}`)
 		inp.monitor = m
 		this.#stateChanged()
 		return this.#call('SetInputAudioMonitorType', { inputName: inp.name, monitorType: MONITOR_TO_OBS[m] })
 	}
 
 	setTracks(inp: InputInfo, changes: Record<string, boolean>): Promise<void> {
+		this.#mark(`tracks:${inp.name}`)
 		inp.tracks = { ...inp.tracks, ...changes }
 		this.#stateChanged()
 		return this.#call('SetInputAudioTracks', { inputName: inp.name, inputAudioTracks: changes })
@@ -741,6 +873,7 @@ export class Engine extends EventEmitter {
 	}
 
 	setFilterEnabled(inp: InputInfo, filter: string, on: boolean): Promise<void> {
+		this.#mark(`fon:${inp.name}:${filter}`)
 		const f = inp.filters.find((x) => x.name === filter)
 		if (f) f.enabled = on
 		this.#updateTrim(inp)
@@ -749,6 +882,7 @@ export class Engine extends EventEmitter {
 	}
 
 	setFilterSetting(inp: InputInfo, filter: string, key: string, value: unknown): Promise<void> {
+		this.#mark(`f:${inp.name}:${filter}`)
 		const f = inp.filters.find((x) => x.name === filter)
 		if (f) f.settings[key] = value
 		this.#stateChanged()
@@ -808,6 +942,7 @@ export class Engine extends EventEmitter {
 			;(rec.overrides as Record<string, unknown>)[key] = v
 		}
 		this.#settingChanged(name, before)
+		if (key === 'backupOf') this.host.structureChanged()
 		this.#dirty()
 		this.#stateChanged()
 	}
@@ -844,6 +979,9 @@ export class Engine extends EventEmitter {
 		if (typeof base === 'boolean') v = value === true || value === 'true' || value === 1 || value === '1' || value === 'on'
 		if (typeof base === 'number' && Number.isNaN(v)) return
 		if (typeof v !== typeof base) return
+		if (key === 'pflMode' && v !== 'additive' && v !== 'exclusive') return
+		if (key === 'layout' && v !== 'strips' && v !== 'rows') return
+		if (key === 'law' && v !== 'desk' && v !== 'linear') return
 		;(this.store.page as unknown as Record<string, unknown>)[key] = v
 		this.#dirty()
 		this.#stateChanged()
@@ -955,7 +1093,11 @@ export class Engine extends EventEmitter {
 		const hidden = new Set(this.store.hidden)
 		return {
 			connected: this.connected,
+			obsError: this.obs?.lastError ?? '',
 			versions: this.versions,
+			notices: this.notices.list,
+			recording: { ...this.recorder.state, plan: this.store.record, countdown: this.recorder.countdown() },
+			solo: this.monitoring.solo,
 			store: {
 				defaults: this.store.defaults,
 				page: this.store.page,
@@ -987,6 +1129,9 @@ export class Engine extends EventEmitter {
 					refGain: rec?.refGain ?? null,
 					settings: this.settings(i.name),
 					rider: i.rider.state,
+					pfl: this.monitoring.pflShown(i),
+					backupFor: this.backups.mainOf(i)?.name ?? null,
+					onBackup: this.backups.onBackup(i.name),
 				}
 			}),
 		}

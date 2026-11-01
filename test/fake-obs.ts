@@ -34,6 +34,7 @@ export class FakeObs {
 	inputs: FakeInput[] = []
 	requests: { type: string; data: Record<string, unknown> }[] = []
 	password: string
+	rec = { active: false, paused: false, directory: '/nonexistent/obs-recordings', format: '%CCYY-%MM-%DD %hh-%mm-%ss' }
 	#timer: NodeJS.Timeout
 	port = 0
 
@@ -220,6 +221,37 @@ export class FakeObs {
 				this.event('SourceFilterEnableStateChanged', { sourceName: i.name, filterName: f.filterName, filterEnabled: f.filterEnabled }, 32)
 				return {}
 			}
+			case 'GetRecordStatus':
+				return { outputActive: this.rec.active, outputPaused: this.rec.paused, outputTimecode: this.rec.active ? '00:00:05.000' : '00:00:00.000', outputDuration: 0, outputBytes: 0 }
+			case 'StartRecord':
+				if (this.rec.active) throw new Error('Recording is already active')
+				this.rec.active = true
+				this.event('RecordStateChanged', { outputActive: true, outputState: 'OBS_WEBSOCKET_OUTPUT_STARTED', outputPath: null }, 64)
+				return {}
+			case 'StopRecord': {
+				if (!this.rec.active) throw new Error('Recording is not active')
+				this.rec.active = false
+				this.rec.paused = false
+				const outputPath = `${this.rec.directory}/${this.rec.format}.mkv`
+				this.event('RecordStateChanged', { outputActive: false, outputState: 'OBS_WEBSOCKET_OUTPUT_STOPPED', outputPath }, 64)
+				return { outputPath }
+			}
+			case 'PauseRecord':
+			case 'ResumeRecord':
+				this.rec.paused = type === 'PauseRecord'
+				this.event('RecordStateChanged', { outputActive: true, outputState: this.rec.paused ? 'OBS_WEBSOCKET_OUTPUT_PAUSED' : 'OBS_WEBSOCKET_OUTPUT_RESUMED', outputPath: null }, 64)
+				return {}
+			case 'GetRecordDirectory':
+				return { recordDirectory: this.rec.directory }
+			case 'SetRecordDirectory':
+				this.rec.directory = String(d.recordDirectory)
+				return {}
+			case 'GetProfileParameter':
+				if (d.parameterCategory === 'Output' && d.parameterName === 'FilenameFormatting') return { parameterValue: this.rec.format, defaultParameterValue: '%CCYY-%MM-%DD %hh-%mm-%ss' }
+				return { parameterValue: null, defaultParameterValue: null }
+			case 'SetProfileParameter':
+				if (d.parameterCategory === 'Output' && d.parameterName === 'FilenameFormatting') this.rec.format = String(d.parameterValue)
+				return {}
 			default:
 				throw new Error(`Unhandled request ${type}`)
 		}
