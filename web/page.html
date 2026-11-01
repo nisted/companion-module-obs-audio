@@ -302,7 +302,9 @@ function buildStrip(inp, rows) {
 function updateStrip(s, inp) {
 	const el = s.el
 	const rows = S.store.page.layout === 'rows'
-	const focused = el.contains(document.activeElement) && document.activeElement !== document.body
+	// only hold off while something is being typed or chosen in this strip (a clicked button keeps focus, and must still update)
+	const ae = document.activeElement
+	const focused = el.contains(ae) && ae.matches('input[type=text], input[type=number], select, textarea')
 	const sig = JSON.stringify([inp.filters, inp.overrides, inp.sections, inp.settings, inp.tracks, inp.monitor, inp.muted, inp.balance, inp.syncMs, inp.hasTrim, inp.target, S.store.sections, S.store.defaults, S.store.moduleCalibrateDb])
 	if (sig !== s.sig && !focused && !el.querySelector('input[type=range]:active')) {
 		s.sig = sig
@@ -571,7 +573,7 @@ const PAGE_FIELDS = [
 
 function renderDialog(force) {
 	const body = $('#dlgBody')
-	if (!force && body.contains(document.activeElement) && document.activeElement !== body) return
+	if (!force && body.contains(document.activeElement) && document.activeElement.matches('input, select, textarea')) return
 	if (!force && (tab === 'sections' || tab === 'io')) return
 	const st = S.store
 	if (tab === 'page') {
