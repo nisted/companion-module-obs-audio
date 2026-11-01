@@ -8,7 +8,7 @@ import { GestureReader, type Gesture } from '../src/gesture.js'
 import { Engine } from '../src/engine.js'
 import { WebServer } from '../src/web.js'
 import { FakeObs } from './fake-obs.js'
-import { compareVersions, newVersionInfo, recompute } from '../src/updates.js'
+import { compareVersions, newVersionInfo, pickNewest, recompute } from '../src/updates.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const mul = (db: number) => Math.pow(10, db / 20)
@@ -355,4 +355,9 @@ test('version compare and update flags', () => {
 	recompute(v)
 	assert.equal(v.moduleUpdate, true)
 	assert.equal(v.obsUpdate, false)
+})
+
+test('newest module release includes pre-releases, skips drafts', () => {
+	assert.equal(pickNewest([{ tag_name: 'v0.1.1' }, { tag_name: 'v0.2.0', draft: true }, { tag_name: 'v0.1.3' }]), '0.1.3')
+	assert.equal(pickNewest([]), null)
 })

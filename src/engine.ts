@@ -12,7 +12,7 @@ import { FILTER_KINDS, filterKind, unversioned } from './filters.js'
 import { Rider, type RiderState } from './rider.js'
 import { PickupManager } from './pickup.js'
 import { GestureReader, type Gesture } from './gesture.js'
-import { latestRelease, newVersionInfo, recompute, MODULE_REPO, OBS_REPO, type VersionInfo } from './updates.js'
+import { latestRelease, newestRelease, newVersionInfo, recompute, MODULE_REPO, OBS_REPO, type VersionInfo } from './updates.js'
 import { MODULE_VERSION } from './version.js'
 import {
 	type Store,
@@ -196,7 +196,7 @@ export class Engine extends EventEmitter {
 	async checkUpdates(): Promise<void> {
 		const v = this.versions
 		try {
-			const [mod, obs] = await Promise.all([latestRelease(MODULE_REPO), latestRelease(OBS_REPO)])
+			const [mod, obs] = await Promise.all([newestRelease(MODULE_REPO), latestRelease(OBS_REPO)])
 			v.moduleLatest = mod
 			v.obsLatest = obs
 			v.error = null

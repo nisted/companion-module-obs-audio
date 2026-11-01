@@ -5,7 +5,7 @@
 
 export const MODULE_REPO = 'nisted/companion-module-obs-audio'
 export const OBS_REPO = 'obsproject/obs-studio'
-export const MODULE_DOWNLOAD = `https://github.com/${MODULE_REPO}/releases/latest`
+export const MODULE_DOWNLOAD = `https://github.com/${MODULE_REPO}/releases`
 export const OBS_DOWNLOAD = 'https://obsproject.com/download'
 
 export interface VersionInfo {
@@ -55,6 +55,33 @@ export async function latestRelease(repo: string, timeoutMs = 10000): Promise<st
 	} finally {
 		clearTimeout(timer)
 	}
+}
+
+/** The highest version among a repo's published releases, pre-releases included (drafts skipped) */
+export async function newestRelease(repo: string, timeoutMs = 10000): Promise<string | null> {
+	const ac = new AbortController()
+	const timer = setTimeout(() => ac.abort(), timeoutMs)
+	try {
+		const r = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=30`, {
+			headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'companion-module-obs-audio' },
+			signal: ac.signal,
+		})
+		if (r.status === 404) return null
+		if (!r.ok) throw new Error(`GitHub said ${r.status}`)
+		return pickNewest((await r.json()) as { tag_name?: string; draft?: boolean }[])
+	} finally {
+		clearTimeout(timer)
+	}
+}
+
+export function pickNewest(releases: { tag_name?: string; draft?: boolean }[]): string | null {
+	let best: string | null = null
+	for (const rel of releases) {
+		if (rel.draft || !rel.tag_name) continue
+		const v = rel.tag_name.replace(/^v/i, '')
+		if (best === null || compareVersions(v, best) > 0) best = v
+	}
+	return best
 }
 
 export function newVersionInfo(moduleVersion: string): VersionInfo {
