@@ -13,6 +13,7 @@ import {
 	type CompanionInputFieldTextInput,
 	type InstanceTypes,
 	type JsonObject,
+	type JsonValue,
 	type SomeCompanionConfigField,
 } from '@companion-module/base'
 import { networkInterfaces } from 'node:os'
@@ -46,6 +47,8 @@ interface Config extends JsonObject {
 	/** The module's own settings, saved here by the module (not edited by hand) */
 	store: string
 	autosave: string
+	/** Hand-typed values put aside while a field is set by the 'Connection: set settings' action (JSON, field → value) */
+	actionSaved: string
 }
 
 interface ObsAudioTypes extends InstanceTypes {
@@ -95,6 +98,18 @@ const CONN_LABELS: Record<ConnField, string> = {
 	gridDwellMs: `Dwell time (ms, default ${DEFAULT_DWELL_MS})`,
 	gridReleaseBand: `Release band (± fader steps, default ${DEFAULT_RELEASE_BAND}, ${NEVER_RELEASE_BAND} = never)`,
 	gridReleaseMs: `Release time (ms, default ${DEFAULT_RELEASE_MS})`,
+}
+
+const BY_ACTION_TIP =
+	"Hands this field over to the 'Connection: set settings' action, so a button or a trigger can change it (from a variable, say). " +
+	"While it's ticked the field's locked here and shows what the action last set. Untick it and you get back what you'd typed before."
+
+/** The connection fields that hold a number */
+const NUMBER_FIELDS = new Set<ConnField>(['port', 'webPort', 'varRateHz', 'updateHours', 'gridBand', 'gridDwellMs', 'gridReleaseBand', 'gridReleaseMs'])
+
+/** Whether a connection field is ticked "Can be set by the action" */
+function isTicked(config: Config | undefined, f: ConnField): boolean {
+	return config?.[`${f}_byAction`] === true
 }
 
 const PAGE_SETTING_CHOICES = (Object.keys(PAGE_DEFAULTS) as (keyof PageSettings)[]).map((k) => ({ id: k, label: k }))
@@ -269,10 +284,95 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 
 	override async configUpdated(config: Config): Promise<void> {
 		const old = this.config
-		// the store is the module's own: keep the running copy
-		this.config = { ...config, store: old.store, autosave: old.autosave }
+		// the store and the saved hand-typed values are the module's own: keep the running copies
+		const next: Config = { ...config, store: old.store, autosave: old.autosave, actionSaved: old.actionSaved }
+		const n = next as Record<string, JsonValue | undefined>
+		const o = old as Record<string, JsonValue | undefined>
+		const saved = this.#savedValues()
+		let ticksChanged = false
+		for (const f of CONN_FIELDS) {
+			const was = isTicked(old, f)
+			const now = isTicked(next, f)
+			if (!was && now) {
+				// handed over to the action: remember what was typed, to put back when it's unticked
+				saved[f] = String(n[f] ?? '')
+				ticksChanged = true
+			} else if (was && now) {
+				// locked: only the action changes it, so a stale value from the connection page doesn't win
+				n[f] = o[f]
+			} else if (was && !now) {
+				if (f in saved) n[f] = saved[f]
+				delete saved[f]
+				ticksChanged = true
+			}
+		}
+		if (Object.keys(saved).length || old.actionSaved) next.actionSaved = JSON.stringify(saved)
+		this.config = next
+		if (ticksChanged) this.setActionDefinitions(this.#actions())
 		await this.#apply()
-		if (config.store !== old.store) this.saveConfig(this.config)
+		const keys = new Set([...Object.keys(config), ...Object.keys(next)])
+		if ([...keys].some((k) => JSON.stringify(config[k]) !== JSON.stringify(next[k]))) this.saveConfig(this.config)
+	}
+
+	/** The hand-typed values put aside while a field is set by the action (field id → value) */
+	#savedValues(): Partial<Record<ConnField, string>> {
+		try {
+			const v: unknown = JSON.parse(String(this.config.actionSaved ?? '') || '{}')
+			if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+			const out: Partial<Record<ConnField, string>> = {}
+			for (const f of CONN_FIELDS) {
+				const x = (v as Record<string, unknown>)[f]
+				if (x !== undefined) out[f] = String(x)
+			}
+			return out
+		} catch {
+			return {}
+		}
+	}
+
+	/** A field's current value for the connection page, with the password and PIN kept to themselves */
+	#shownValue(f: ConnField): string {
+		const v = String(this.config?.[f] ?? '').trim()
+		if (f === 'password' || f === 'pin') return v ? '•••••• (hidden)' : 'blank (none)'
+		if (f === 'webBind' && (v === '' || v === 'all')) return 'all network connections'
+		if (f === 'webBind' && v === 'local') return 'this computer only'
+		return v || 'blank (so the default)'
+	}
+
+	/** The connection fields ticked "Can be set by the action" */
+	#tickedFields(): ConnField[] {
+		return CONN_FIELDS.filter((f) => isTicked(this.config, f))
+	}
+
+	/** Run 'Connection: set settings': write the given values into the ticked fields, then apply them */
+	async #setByAction(options: CompanionOptionValues): Promise<void> {
+		const ticked = this.#tickedFields()
+		if (!ticked.length) {
+			this.log('info', "Connection: set settings: nothing's ticked \"Can be set by the action\" on the connection page yet, so there's nothing for me to set.")
+			return
+		}
+		const next = { ...this.config } as Record<string, JsonValue | undefined>
+		let changed = false
+		for (const f of CONN_FIELDS) {
+			const v = this.#text(options, f)
+			if (v === '') continue
+			if (!ticked.includes(f)) {
+				this.log('info', `Connection: set settings: "${CONN_LABELS[f]}" isn't ticked "Can be set by the action" on the connection page, so I've left it alone.`)
+				continue
+			}
+			if (NUMBER_FIELDS.has(f) && Number.isNaN(Number(v))) {
+				this.log('warn', `Connection: set settings: "${CONN_LABELS[f]}" needs a number, and "${v}" isn't one. Left it as it was.`)
+				continue
+			}
+			if (String(next[f] ?? '') !== v) {
+				next[f] = v
+				changed = true
+			}
+		}
+		if (!changed) return
+		this.config = next as Config
+		this.saveConfig(this.config)
+		await this.#apply()
 	}
 
 	override handleStartStopRecordActions(isRecording: boolean): void {
@@ -313,6 +413,27 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 		const urls = this.#pageUrls()
 		const obsState = this.engine?.connected ? 'Connected to OBS. All good.' : `Not connected to OBS. ${this.engine?.obs?.lastError || ''}`
 		const nets = localAddresses()
+		/** A connection field, plus its "Can be set by the action" tick and what it shows while ticked */
+		const lock = (field: SomeCompanionConfigField & { id: ConnField }): SomeCompanionConfigField[] => [
+			{ ...field, isVisibleExpression: `!$(options:${field.id}_byAction)` },
+			{
+				type: 'static-text',
+				id: `${field.id}_locked`,
+				label: field.label,
+				width: field.width,
+				value: `Set by the 'Connection: set settings' action: ${this.#shownValue(field.id)}`,
+				isVisibleExpression: `$(options:${field.id}_byAction)`,
+			},
+			{
+				type: 'checkbox',
+				id: `${field.id}_byAction`,
+				label: 'Can be set by the action',
+				width: 3,
+				default: false,
+				disableAutoExpression: true,
+				tooltip: BY_ACTION_TIP,
+			},
+		]
 		return [
 			{
 				type: 'static-text',
@@ -322,46 +443,47 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				value:
 					`${obsState}<br>` +
 					(urls.length ? `Fader page: ${urls.map((u) => `<a href="${u}" target="_blank">${u}</a>`).join(' · ')} (works as an OBS custom browser dock too: Docks → Custom Browser Docks).` : 'Fader page: off for now.') +
-					'<br>Setting up OBS: go to Tools → WebSocket Server Settings and tick <b>Enable WebSocket server</b> (it starts off). OBS also switches on a password: copy it from <b>Show Connect Info</b> into the password below, or untick <b>Enable Authentication</b> and leave the password blank.',
+					'<br>Setting up OBS: go to Tools → WebSocket Server Settings and tick <b>Enable WebSocket server</b> (it starts off). OBS also switches on a password: copy it from <b>Show Connect Info</b> into the password below, or untick <b>Enable Authentication</b> and leave the password blank.' +
+					'<br>Want a button, a trigger or a variable to change one of these settings? Tick <b>Can be set by the action</b> next to it, then use the <b>Connection: set settings</b> action.',
 			},
-			{
+			...lock({
 				type: 'textinput',
 				id: 'host',
-				label: 'OBS address',
-				width: 6,
+				label: CONN_LABELS.host,
+				width: 9,
 				default: '127.0.0.1',
 				tooltip: 'Where OBS lives. 127.0.0.1 if it\'s on this computer, otherwise its IP address, e.g. 192.168.1.20.',
-			},
-			{
+			}),
+			...lock({
 				type: 'textinput',
 				id: 'port',
-				label: 'OBS WebSocket port (default 4455)',
-				width: 3,
+				label: CONN_LABELS.port,
+				width: 9,
 				default: '4455',
 				tooltip: "OBS's WebSocket port. You'll find it in OBS: Tools → WebSocket Server Settings → Server Port. It's 4455 unless someone's changed it.",
-			},
-			{
+			}),
+			...lock({
 				type: 'textinput',
 				id: 'password',
-				label: 'OBS WebSocket password',
-				width: 6,
+				label: CONN_LABELS.password,
+				width: 9,
 				default: '',
 				tooltip:
 					"OBS makes up its own password and has authentication on out of the box. Copy it from OBS: Tools → WebSocket Server Settings → Show Connect Info. Or untick Enable Authentication there and leave this blank (but then anything on the network can drive OBS).",
-			},
-			{
+			}),
+			...lock({
 				type: 'textinput',
 				id: 'webPort',
-				label: 'Fader page port (default 8890, 0 = off)',
-				width: 3,
+				label: CONN_LABELS.webPort,
+				width: 9,
 				default: '8890',
 				tooltip: 'The port the fader and meter page lives on. Open http://<this computer>:<port>/ in any browser on the network. 0 switches the page off.',
-			},
-			{
+			}),
+			...lock({
 				type: 'dropdown',
 				id: 'webBind',
-				label: 'Fader page available on',
-				width: 6,
+				label: CONN_LABELS.webBind,
+				width: 9,
 				default: 'all',
 				allowCustom: true,
 				tooltip:
@@ -371,31 +493,31 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					{ id: 'local', label: 'This computer only (127.0.0.1)' },
 					...nets.map((n) => ({ id: n.address, label: `${n.name}: ${n.address}` })),
 				],
-			},
-			{
+			}),
+			...lock({
 				type: 'textinput',
 				id: 'pin',
-				label: 'Fader page PIN (blank = none)',
-				width: 3,
+				label: CONN_LABELS.pin,
+				width: 9,
 				default: '',
 				tooltip: 'Set one and the page asks for it before showing anything or letting anyone change things.',
-			},
-			{
+			}),
+			...lock({
 				type: 'textinput',
 				id: 'varRateHz',
-				label: 'Meter variables: updates per second (default 5)',
-				width: 3,
+				label: CONN_LABELS.varRateHz,
+				width: 9,
 				default: '5',
 				tooltip: 'How often the meter level variables update (1 to 20). Higher looks smoother on buttons, but keeps everything busier.',
-			},
-			{
+			}),
+			...lock({
 				type: 'textinput',
 				id: 'updateHours',
-				label: 'Check for module and OBS updates every (hours, default 12, 0 = never)',
-				width: 6,
+				label: CONN_LABELS.updateHours,
+				width: 9,
 				default: '12',
 				tooltip: 'How often I peek at GitHub for a newer OBS Audio module and OBS. Needs internet. 0 = never.',
-			},
+			}),
 			{
 				type: 'static-text',
 				id: 'gridInfo',
@@ -403,38 +525,38 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				width: 12,
 				value: "These are what 'Fader: from a value (Intech Grid fader), with pickup' uses whenever its own pickup fields are left blank. Each OBS Audio connection (e.g. main and backup OBS) gets its own set.",
 			},
-			{
+			...lock({
 				type: 'textinput',
 				id: 'gridBand',
-				label: `Catch band (± fader steps of 127, default ${DEFAULT_BAND})`,
-				width: 3,
+				label: CONN_LABELS.gridBand,
+				width: 9,
 				default: String(DEFAULT_BAND),
 				tooltip: "How close the Grid fader has to get to OBS's level before it takes over.",
-			},
-			{
+			}),
+			...lock({
 				type: 'textinput',
 				id: 'gridDwellMs',
-				label: `Dwell time (ms, default ${DEFAULT_DWELL_MS})`,
-				width: 3,
+				label: CONN_LABELS.gridDwellMs,
+				width: 9,
 				default: String(DEFAULT_DWELL_MS),
 				tooltip: 'How long the Grid fader has to sit inside the catch band before it takes over. Stops a quick swipe past grabbing it.',
-			},
-			{
+			}),
+			...lock({
 				type: 'textinput',
 				id: 'gridReleaseBand',
-				label: `Release band (± fader steps, default ${DEFAULT_RELEASE_BAND}, ${NEVER_RELEASE_BAND} = never)`,
-				width: 3,
+				label: CONN_LABELS.gridReleaseBand,
+				width: 9,
 				default: String(DEFAULT_RELEASE_BAND),
 				tooltip: 'Once latched, only a move on the OBS side bigger than this makes the Grid fader let go.',
-			},
-			{
+			}),
+			...lock({
 				type: 'textinput',
 				id: 'gridReleaseMs',
-				label: `Release time (ms, default ${DEFAULT_RELEASE_MS})`,
-				width: 3,
+				label: CONN_LABELS.gridReleaseMs,
+				width: 9,
 				default: String(DEFAULT_RELEASE_MS),
 				tooltip: 'How long a move on the OBS side has to stay outside the release band before the Grid fader lets go.',
-			},
+			}),
 			{
 				type: 'static-text',
 				id: 'bundle',
@@ -656,6 +778,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 		]
 		const flip = (mode: unknown, current: boolean) => (mode === 'on' ? true : mode === 'off' ? false : !current)
 		const settingChoices = INPUT_SETTING_KEYS.map((k) => ({ id: k, label: INPUT_FIELDS[k].label }))
+		const ticked = this.#tickedFields()
 
 		return {
 			ag_button: {
@@ -1228,6 +1351,39 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				options: [],
 				callback: async () => {
 					await e.checkUpdates()
+				},
+			},
+			connection_set: {
+				name: 'Connection: set settings',
+				description:
+					"Changes this connection's settings, for the fields ticked \"Can be set by the action\" on the connection page. Blank = leave as is. Put it in a trigger on \"variable changed\" to drive the connection from a variable.",
+				options: ticked.length
+					? ticked.map(
+							(f): CompanionInputFieldTextInput => ({
+								type: 'textinput',
+								id: f,
+								label: CONN_LABELS[f],
+								default: '',
+								useVariables: true,
+								tooltip:
+									f === 'webBind'
+										? 'all, local, or one of this computer\'s addresses. Blank = leave as is.'
+										: NUMBER_FIELDS.has(f)
+											? 'A number. Blank = leave as is.'
+											: 'Blank = leave as is.',
+							}),
+						)
+					: [
+							{
+								type: 'static-text',
+								id: 'none',
+								label: 'Nothing to set yet',
+								value:
+									"Tick \"Can be set by the action\" next to a field on this connection's settings page first. Then it turns up here, ready to set.",
+							},
+						],
+				callback: async ({ options }) => {
+					await this.#setByAction(options)
 				},
 			},
 			refresh: {
