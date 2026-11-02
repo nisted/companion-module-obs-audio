@@ -1,16 +1,18 @@
 import {
 	InstanceBase,
 	InstanceStatus,
-	runEntrypoint,
-	type CompanionActionContext,
 	type CompanionActionDefinitions,
 	type CompanionFeedbackDefinitions,
 	type CompanionOptionValues,
 	type CompanionPresetDefinitions,
-	type CompanionVariableDefinition,
+	type CompanionPresetSection,
+	type CompanionStaticUpgradeScript,
+	type CompanionVariableDefinitions,
 	type CompanionVariableValues,
 	type DropdownChoice,
 	type CompanionInputFieldTextInput,
+	type InstanceTypes,
+	type JsonObject,
 	type SomeCompanionConfigField,
 } from '@companion-module/base'
 import { networkInterfaces } from 'node:os'
@@ -24,7 +26,7 @@ import { RIDER_STATES, type RiderState } from './rider.js'
 import { DEFAULT_BAND, DEFAULT_DWELL_MS, DEFAULT_FLASH_MS, DEFAULT_RELEASE_BAND, DEFAULT_RELEASE_MS, NEVER_RELEASE_BAND } from './pickup.js'
 import { parseColour, rgb, scaleColour } from './colour.js'
 
-interface Config {
+interface Config extends JsonObject {
 	host: string
 	port: string | number
 	password: string
@@ -42,7 +44,10 @@ interface Config {
 	autosave?: string
 }
 
-type Ctx = Pick<CompanionActionContext, 'parseVariablesInString'>
+interface ObsAudioTypes extends InstanceTypes {
+	config: Config
+	secrets: undefined
+}
 
 interface Resolved {
 	host: string
@@ -56,7 +61,39 @@ interface Resolved {
 	grid: { band: number; dwellMs: number; releaseBand: number; releaseMs: number }
 }
 
-const PAGE_SETTING_CHOICES = (Object.keys(PAGE_DEFAULTS) as (keyof PageSettings)[]).map((k) => ({ id: k, label: k }))
+/** The connection fields that hold settings (and can be handed over to the 'Connection: set settings' action) */
+const CONN_FIELDS = [
+	'host',
+	'port',
+	'password',
+	'webPort',
+	'webBind',
+	'pin',
+	'varRateHz',
+	'updateHours',
+	'gridBand',
+	'gridDwellMs',
+	'gridReleaseBand',
+	'gridReleaseMs',
+] as const
+type ConnField = (typeof CONN_FIELDS)[number]
+
+const CONN_LABELS: Record<ConnField, string> = {
+	host: 'OBS address',
+	port: 'OBS WebSocket port (default 4455)',
+	password: 'OBS WebSocket password',
+	webPort: 'Fader page port (default 8890, 0 = off)',
+	webBind: 'Fader page available on',
+	pin: 'Fader page PIN (blank = none)',
+	varRateHz: 'Meter variables: updates per second (default 5)',
+	updateHours: 'Check for module and OBS updates every (hours, default 12, 0 = never)',
+	gridBand: `Catch band (± fader steps of 127, default ${DEFAULT_BAND})`,
+	gridDwellMs: `Dwell time (ms, default ${DEFAULT_DWELL_MS})`,
+	gridReleaseBand: `Release band (± fader steps, default ${DEFAULT_RELEASE_BAND}, ${NEVER_RELEASE_BAND} = never)`,
+	gridReleaseMs: `Release time (ms, default ${DEFAULT_RELEASE_MS})`,
+}
+
+const PAGE_SETTING_CHOICES =(Object.keys(PAGE_DEFAULTS) as (keyof PageSettings)[]).map((k) => ({ id: k, label: k }))
 
 /** Open a web address in this computer's default browser */
 function openInBrowser(url: string, warn: (m: string) => void): void {
@@ -111,7 +148,9 @@ const STATUS_COLOURS: Record<RiderState, string> = {
 	calibrating: '#8b5cf6',
 }
 
-class ObsAudioInstance extends InstanceBase<Config> {
+export const UpgradeScripts: CompanionStaticUpgradeScript<Config>[] = []
+
+export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 	config!: Config
 	engine!: Engine
 	web: WebServer | null = null
@@ -120,8 +159,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 	#structureTimer: NodeJS.Timeout | null = null
 
 	#resolved: Resolved | null = null
-	#pollTimer: NodeJS.Timeout | null = null
 	#recordingActions = false
+	/** Connection fields we've already moaned about having a variable in them */
+	#varWarned = new Set<string>()
 
 	override async init(config: Config): Promise<void> {
 		this.config = config
@@ -143,28 +183,44 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		this.updateStatus(InstanceStatus.Connecting)
 		await this.#apply()
 		this.#structureChanged()
-		// connection settings can be variables: check them for changes every couple of seconds
-		this.#pollTimer = setInterval(() => void this.#apply(), 2000)
 	}
 
-	/** Work out the connection settings (variables included) and apply any that changed */
+	/**
+	 * A connection field's value, trimmed. Connection fields can't take variables any more,
+	 * so one that still has "$(" in it is treated as blank (its default), with a warning in the log.
+	 */
+	#field(id: ConnField): string {
+		const v = String(this.config[id] ?? '').trim()
+		if (!v.includes('$(')) return v
+		const key = `${id}=${v}`
+		if (!this.#varWarned.has(key)) {
+			this.#varWarned.add(key)
+			this.log(
+				'warn',
+				`"${CONN_LABELS[id]}" on the connection page has a variable in it (${v}). Connection fields can't take variables any more, so I'm using the default for now. ` +
+					`Want a variable to drive it? Tick "Can be set by the action" next to it, then use the "Connection: set settings" action (a trigger on "variable changed" does the job nicely).`,
+			)
+		}
+		return ''
+	}
+
+	/** Work out the connection settings and apply any that changed */
 	async #apply(): Promise<void> {
-		const c = this.config
-		const parse = async (v: unknown) => (await this.parseVariablesInString(String(v ?? ''))).trim()
+		const f = (id: ConnField) => this.#field(id)
 		const r: Resolved = {
-			host: (await parse(c.host)) || '127.0.0.1',
-			port: parseNumber(await parse(c.port), 4455, 1, 65535),
-			password: await parse(c.password),
-			webPort: parseNumber(await parse(c.webPort), 8890, 0, 65535),
-			bind: bindAddress(await parse(c.webBind)),
-			pin: await parse(c.pin),
-			varRateHz: parseNumber(await parse(c.varRateHz), 5, 1, 20),
-			updateHours: parseNumber(await parse(c.updateHours), 12, 0, 720),
+			host: f('host') || '127.0.0.1',
+			port: parseNumber(f('port'), 4455, 1, 65535),
+			password: f('password'),
+			webPort: parseNumber(f('webPort'), 8890, 0, 65535),
+			bind: bindAddress(f('webBind')),
+			pin: f('pin'),
+			varRateHz: parseNumber(f('varRateHz'), 5, 1, 20),
+			updateHours: parseNumber(f('updateHours'), 12, 0, 720),
 			grid: {
-				band: parseNumber(await parse(c.gridBand), DEFAULT_BAND, 0, 64),
-				dwellMs: parseNumber(await parse(c.gridDwellMs), DEFAULT_DWELL_MS, 0, 10000),
-				releaseBand: parseNumber(await parse(c.gridReleaseBand), DEFAULT_RELEASE_BAND, 0, NEVER_RELEASE_BAND),
-				releaseMs: parseNumber(await parse(c.gridReleaseMs), DEFAULT_RELEASE_MS, 0, 60000),
+				band: parseNumber(f('gridBand'), DEFAULT_BAND, 0, 64),
+				dwellMs: parseNumber(f('gridDwellMs'), DEFAULT_DWELL_MS, 0, 10000),
+				releaseBand: parseNumber(f('gridReleaseBand'), DEFAULT_RELEASE_BAND, 0, NEVER_RELEASE_BAND),
+				releaseMs: parseNumber(f('gridReleaseMs'), DEFAULT_RELEASE_MS, 0, 60000),
 			},
 		}
 		const old = this.#resolved
@@ -202,7 +258,6 @@ class ObsAudioInstance extends InstanceBase<Config> {
 
 	override async destroy(): Promise<void> {
 		if (this.#varTimer) clearInterval(this.#varTimer)
-		if (this.#pollTimer) clearInterval(this.#pollTimer)
 		if (this.#structureTimer) clearTimeout(this.#structureTimer)
 		this.web?.stop()
 		this.engine.destroy()
@@ -254,7 +309,6 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		const urls = this.#pageUrls()
 		const obsState = this.engine?.connected ? 'Connected to OBS. All good.' : `Not connected to OBS. ${this.engine?.obs?.lastError || ''}`
 		const nets = localAddresses()
-		const VAR = ' A variable works here too, e.g. $(custom:obs_host).'
 		return [
 			{
 				type: 'static-text',
@@ -272,7 +326,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'OBS address',
 				width: 6,
 				default: '127.0.0.1',
-				tooltip: 'Where OBS lives. 127.0.0.1 if it\'s on this computer, otherwise its IP address, e.g. 192.168.1.20.' + VAR,
+				tooltip: 'Where OBS lives. 127.0.0.1 if it\'s on this computer, otherwise its IP address, e.g. 192.168.1.20.',
 			},
 			{
 				type: 'textinput',
@@ -280,7 +334,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'OBS WebSocket port (default 4455)',
 				width: 3,
 				default: '4455',
-				tooltip: "OBS's WebSocket port. You'll find it in OBS: Tools → WebSocket Server Settings → Server Port. It's 4455 unless someone's changed it." + VAR,
+				tooltip: "OBS's WebSocket port. You'll find it in OBS: Tools → WebSocket Server Settings → Server Port. It's 4455 unless someone's changed it.",
 			},
 			{
 				type: 'textinput',
@@ -289,7 +343,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				width: 6,
 				default: '',
 				tooltip:
-					"OBS makes up its own password and has authentication on out of the box. Copy it from OBS: Tools → WebSocket Server Settings → Show Connect Info. Or untick Enable Authentication there and leave this blank (but then anything on the network can drive OBS)." + VAR,
+					"OBS makes up its own password and has authentication on out of the box. Copy it from OBS: Tools → WebSocket Server Settings → Show Connect Info. Or untick Enable Authentication there and leave this blank (but then anything on the network can drive OBS).",
 			},
 			{
 				type: 'textinput',
@@ -297,7 +351,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'Fader page port (default 8890, 0 = off)',
 				width: 3,
 				default: '8890',
-				tooltip: 'The port the fader and meter page lives on. Open http://<this computer>:<port>/ in any browser on the network. 0 switches the page off.' + VAR,
+				tooltip: 'The port the fader and meter page lives on. Open http://<this computer>:<port>/ in any browser on the network. 0 switches the page off.',
 			},
 			{
 				type: 'dropdown',
@@ -307,7 +361,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				default: 'all',
 				allowCustom: true,
 				tooltip:
-					"Which of this computer's network connections the page answers on, like Companion's own \"network interface\" setting. All = any of them. This computer only = just a browser on this computer. Or pick one connection. It doesn't decide who's allowed in, mind: that's what the PIN is for. You can also type an address or a variable.",
+					"Which of this computer's network connections the page answers on, like Companion's own \"network interface\" setting. All = any of them. This computer only = just a browser on this computer. Or pick one connection. It doesn't decide who's allowed in, mind: that's what the PIN is for. You can also type an address.",
 				choices: [
 					{ id: 'all', label: 'All network connections' },
 					{ id: 'local', label: 'This computer only (127.0.0.1)' },
@@ -320,7 +374,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'Fader page PIN (blank = none)',
 				width: 3,
 				default: '',
-				tooltip: 'Set one and the page asks for it before showing anything or letting anyone change things.' + VAR,
+				tooltip: 'Set one and the page asks for it before showing anything or letting anyone change things.',
 			},
 			{
 				type: 'textinput',
@@ -328,7 +382,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'Meter variables: updates per second (default 5)',
 				width: 3,
 				default: '5',
-				tooltip: 'How often the meter level variables update (1 to 20). Higher looks smoother on buttons, but keeps everything busier.' + VAR,
+				tooltip: 'How often the meter level variables update (1 to 20). Higher looks smoother on buttons, but keeps everything busier.',
 			},
 			{
 				type: 'textinput',
@@ -336,7 +390,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'Check for module and OBS updates every (hours, default 12, 0 = never)',
 				width: 6,
 				default: '12',
-				tooltip: 'How often I peek at GitHub for a newer OBS Audio module and OBS. Needs internet. 0 = never.' + VAR,
+				tooltip: 'How often I peek at GitHub for a newer OBS Audio module and OBS. Needs internet. 0 = never.',
 			},
 			{
 				type: 'static-text',
@@ -351,7 +405,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: `Catch band (± fader steps of 127, default ${DEFAULT_BAND})`,
 				width: 3,
 				default: String(DEFAULT_BAND),
-				tooltip: "How close the Grid fader has to get to OBS's level before it takes over." + VAR,
+				tooltip: "How close the Grid fader has to get to OBS's level before it takes over.",
 			},
 			{
 				type: 'textinput',
@@ -359,7 +413,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: `Dwell time (ms, default ${DEFAULT_DWELL_MS})`,
 				width: 3,
 				default: String(DEFAULT_DWELL_MS),
-				tooltip: 'How long the Grid fader has to sit inside the catch band before it takes over. Stops a quick swipe past grabbing it.' + VAR,
+				tooltip: 'How long the Grid fader has to sit inside the catch band before it takes over. Stops a quick swipe past grabbing it.',
 			},
 			{
 				type: 'textinput',
@@ -367,7 +421,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: `Release band (± fader steps, default ${DEFAULT_RELEASE_BAND}, ${NEVER_RELEASE_BAND} = never)`,
 				width: 3,
 				default: String(DEFAULT_RELEASE_BAND),
-				tooltip: 'Once latched, only a move on the OBS side bigger than this makes the Grid fader let go.' + VAR,
+				tooltip: 'Once latched, only a move on the OBS side bigger than this makes the Grid fader let go.',
 			},
 			{
 				type: 'textinput',
@@ -375,7 +429,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: `Release time (ms, default ${DEFAULT_RELEASE_MS})`,
 				width: 3,
 				default: String(DEFAULT_RELEASE_MS),
-				tooltip: 'How long a move on the OBS side has to stay outside the release band before the Grid fader lets go.' + VAR,
+				tooltip: 'How long a move on the OBS side has to stay outside the release band before the Grid fader lets go.',
 			},
 			{
 				type: 'static-text',
@@ -392,12 +446,14 @@ class ObsAudioInstance extends InstanceBase<Config> {
 
 	// ---- helpers ----------------------------------------------------------------
 
-	async #text(options: CompanionOptionValues, id: string, ctx: Ctx): Promise<string> {
-		return (await ctx.parseVariablesInString(String(options[id] ?? ''))).trim()
+	/** An option's value as text. Companion has already filled in any variables or expression. */
+	#text(options: CompanionOptionValues, id: string): string {
+		const v = options[id]
+		return (v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)).trim()
 	}
 
-	async #input(options: CompanionOptionValues, ctx: Ctx): Promise<InputInfo | undefined> {
-		const t = await this.#text(options, 'input', ctx)
+	#input(options: CompanionOptionValues): InputInfo | undefined {
+		const t = this.#text(options, 'input')
 		const inp = this.engine.resolve(t)
 		if (!inp) this.log('warn', `No OBS audio input "${t}"`)
 		return inp
@@ -416,18 +472,19 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		this.setActionDefinitions(this.#actions())
 		this.setFeedbackDefinitions(this.#feedbacks())
 		this.setVariableDefinitions(this.#variableDefs())
-		this.setPresetDefinitions(this.#presets())
+		const { structure, presets } = this.#presets()
+		this.setPresetDefinitions(structure, presets)
 	}
 
 	#stateChanged(): void {
-		this.checkFeedbacks()
+		this.checkAllFeedbacks()
 		this.setVariableValues(this.#stateVariables())
 	}
 
 	// ---- variables ----------------------------------------------------------------
 
-	#variableDefs(): CompanionVariableDefinition[] {
-		const defs: CompanionVariableDefinition[] = [
+	#variableDefs(): CompanionVariableDefinitions {
+		const defs: { variableId: string; name: string }[] = [
 			{ variableId: 'connected', name: 'Connected to OBS' },
 			{ variableId: 'inputs', name: 'Number of inputs shown' },
 			{ variableId: 'module_version', name: 'OBS Audio module: this version' },
@@ -486,7 +543,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				for (const prm of k?.params ?? []) defs.push({ variableId: `${fp}${prm.key}`, name: `${lab}: ${f.name} ${prm.label}` })
 			}
 		})
-		return defs
+		return Object.fromEntries(defs.map((d) => [d.variableId, { name: d.name }]))
 	}
 
 	#stateVariables(): CompanionVariableValues {
@@ -614,8 +671,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						],
 					},
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
 					if (options.edge === 'up') e.buttonUp(inp)
 					else e.buttonDown(inp)
@@ -625,8 +682,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Auto gain: this level please',
 				description: 'Capture the current level as the rider target',
 				options: [inputOption],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (inp) e.captureTarget(inp)
 				},
 			},
@@ -639,19 +696,20 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						label: 'To',
 						id: 'to',
 						default: 'input',
+						disableAutoExpression: true,
 						choices: [
 							{ id: 'input', label: "The input's own calibrate level" },
 							{ id: 'module', label: 'The module calibrate level' },
 							{ id: 'custom', label: 'A level given here' },
 						],
 					},
-					{ type: 'textinput', label: 'Level (dB)', id: 'level', default: '-18', useVariables: true, isVisible: (o) => o.to === 'custom' },
+					{ type: 'textinput', label: 'Level (dB)', id: 'level', default: '-18', useVariables: true, isVisibleExpression: "$(options:to) == 'custom'" },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
 					if (options.to === 'custom') {
-						const db = parseNumber(await this.#text(options, 'level', ctx), NaN, -100, 26)
+						const db = parseNumber(this.#text(options, 'level'), NaN, -100, 26)
 						if (Number.isNaN(db)) return this.log('warn', 'Calibrate: the level isn\'t a number')
 						e.calibrate(inp, db)
 					} else e.calibrate(inp, options.to === 'module' ? 'module' : 'input')
@@ -660,8 +718,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			ag_rider: {
 				name: 'Auto gain: rider on / off',
 				options: [inputOption, { type: 'dropdown', label: 'Rider', id: 'mode', default: 'toggle', choices: onOffToggle }],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (inp) e.setInputSetting(inp.name, 'riderOn', flip(options.mode, e.settings(inp.name).riderOn))
 				},
 			},
@@ -669,14 +727,14 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Auto gain: set the rider target',
 				options: [
 					inputOption,
-					{ type: 'dropdown', label: 'Mode', id: 'mode', default: 'set', choices: modeChoices([{ id: 'clear', label: 'Clear the target' }]) },
-					{ type: 'textinput', label: 'dB', id: 'db', default: '-18', useVariables: true, isVisible: (o) => o.mode !== 'clear' },
+					{ type: 'dropdown', label: 'Mode', id: 'mode', default: 'set', disableAutoExpression: true, choices: modeChoices([{ id: 'clear', label: 'Clear the target' }]) },
+					{ type: 'textinput', label: 'dB', id: 'db', default: '-18', useVariables: true, isVisibleExpression: "$(options:mode) != 'clear'" },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
 					if (options.mode === 'clear') return e.setTarget(inp, null)
-					const n = parseNumber(await this.#text(options, 'db', ctx), NaN, -100, 26)
+					const n = parseNumber(this.#text(options, 'db'), NaN, -100, 26)
 					if (Number.isNaN(n)) return
 					const cur = e.store.inputs[inp.name]?.target ?? null
 					if (options.mode === 'adjust') {
@@ -694,12 +752,13 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						label: 'For',
 						id: 'scope',
 						default: 'input',
+						disableAutoExpression: true,
 						choices: [
 							{ id: 'input', label: 'One input' },
 							{ id: 'default', label: 'The defaults (every input that has not changed it)' },
 						],
 					},
-					{ ...inputOption, isVisible: (o) => o.scope === 'input' },
+					{ ...inputOption, isVisibleExpression: "$(options:scope) == 'input'" },
 					{ type: 'dropdown', label: 'Setting', id: 'key', default: 'bandDb', choices: settingChoices },
 					{
 						type: 'textinput',
@@ -710,11 +769,11 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						tooltip: 'A number, on/off, or a choice (e.g. fader, trim, rms, peak). For one input, "default" goes back to the page-wide default.',
 					},
 				],
-				callback: async ({ options }, ctx) => {
+				callback: async ({ options }) => {
 					const key = String(options.key) as keyof InputSettings
-					const value = await this.#text(options, 'value', ctx)
+					const value = this.#text(options, 'value')
 					if (options.scope === 'default') return e.setDefaultSetting(key, value)
-					const inp = await this.#input(options, ctx)
+					const inp = this.#input(options)
 					if (inp) e.setInputSetting(inp.name, key, value.toLowerCase() === 'default' ? undefined : value)
 				},
 			},
@@ -722,19 +781,19 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Fader: set level',
 				options: [
 					inputOption,
-					{ type: 'dropdown', label: 'Mode', id: 'mode', default: 'set', choices: modeChoices() },
+					{ type: 'dropdown', label: 'Mode', id: 'mode', default: 'set', disableAutoExpression: true, choices: modeChoices() },
 					{ type: 'textinput', label: 'dB (or -inf)', id: 'db', default: '0', useVariables: true },
-					{ type: 'textinput', label: 'Fade time (ms, 0 = instant)', id: 'fade', default: '0', useVariables: true, isVisible: (o) => o.mode === 'set' },
+					{ type: 'textinput', label: 'Fade time (ms, 0 = instant)', id: 'fade', default: '0', useVariables: true, isVisibleExpression: "$(options:mode) == 'set'" },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
-					const db = parseDb(await this.#text(options, 'db', ctx))
+					const db = parseDb(this.#text(options, 'db'))
 					if (db === undefined) return this.log('warn', 'Fader: the level isn\'t a number')
 					if (options.mode === 'adjust') {
 						if (inp.volumeDb === null || db === null) return
 						e.setVolume(inp, clamp(inp.volumeDb + db, MIN_DB, 26))
-					} else e.setVolume(inp, db === null ? null : clamp(db, MIN_DB, 26), parseNumber(await this.#text(options, 'fade', ctx), 0, 0, 600000))
+					} else e.setVolume(inp, db === null ? null : clamp(db, MIN_DB, 26), parseNumber(this.#text(options, 'fade'), 0, 0, 600000))
 				},
 			},
 			volume_grid: {
@@ -750,6 +809,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						label: 'Value is',
 						id: 'valueType',
 						default: 'position',
+						disableAutoExpression: true,
 						choices: [
 							{ id: 'position', label: 'Fader position 0-127 (e.g. Grid fader)' },
 							{ id: 'db', label: 'Level in dB (-inf, or -100 to +26)' },
@@ -760,12 +820,13 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						label: 'Pickup mode',
 						id: 'pickup',
 						default: true,
+						disableAutoExpression: true,
 						tooltip:
 							"Don't change OBS until the fader sits within the catch band of the OBS level for the dwell time, then stay latched until OBS is moved elsewhere. Show the state with the 'Grid fader pickup LED' feedback.",
-						isVisible: (o) => o.valueType !== 'db',
+						isVisibleExpression: "$(options:valueType) != 'db'",
 					},
-					{ type: 'textinput', label: 'Catch band (blank = this connection\'s setting)', id: 'band', default: '', useVariables: true, isVisible: (o) => o.valueType !== 'db' && o.pickup === true },
-					{ type: 'textinput', label: 'Dwell time ms (blank = this connection\'s setting)', id: 'dwell', default: '', useVariables: true, isVisible: (o) => o.valueType !== 'db' && o.pickup === true },
+					{ type: 'textinput', label: 'Catch band (blank = this connection\'s setting)', id: 'band', default: '', useVariables: true, isVisibleExpression: "$(options:valueType) != 'db' && $(options:pickup)" },
+					{ type: 'textinput', label: 'Dwell time ms (blank = this connection\'s setting)', id: 'dwell', default: '', useVariables: true, isVisibleExpression: "$(options:valueType) != 'db' && $(options:pickup)" },
 					{
 						type: 'textinput',
 						label: 'Release band (blank = this connection\'s setting)',
@@ -773,15 +834,15 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						default: '',
 						useVariables: true,
 						tooltip: `Once latched, only an OBS-side move bigger than this lets go. ${NEVER_RELEASE_BAND} = never. Leave blank to use the connection's setting.`,
-						isVisible: (o) => o.valueType !== 'db' && o.pickup === true,
+						isVisibleExpression: "$(options:valueType) != 'db' && $(options:pickup)",
 					},
-					{ type: 'textinput', label: 'Release time ms (blank = this connection\'s setting)', id: 'releaseMs', default: '', useVariables: true, isVisible: (o) => o.valueType !== 'db' && o.pickup === true },
+					{ type: 'textinput', label: 'Release time ms (blank = this connection\'s setting)', id: 'releaseMs', default: '', useVariables: true, isVisibleExpression: "$(options:valueType) != 'db' && $(options:pickup)" },
 				],
-				callback: async ({ options }, ctx) => {
-					const fader = parseNumber(await this.#text(options, 'fader', ctx), 1, 1, 999)
-					const inp = e.gridInput(Math.round(fader), await this.#text(options, 'input', ctx))
+				callback: async ({ options }) => {
+					const fader = parseNumber(this.#text(options, 'fader'), 1, 1, 999)
+					const inp = e.gridInput(Math.round(fader), this.#text(options, 'input'))
 					if (!inp) return
-					const raw = await this.#text(options, 'value', ctx)
+					const raw = this.#text(options, 'value')
 					if (options.valueType === 'db') {
 						const db = parseDb(raw)
 						if (db !== undefined) e.setVolume(inp, db === null ? null : clamp(db, MIN_DB, 26))
@@ -794,10 +855,10 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					if (options.pickup !== true) return send(incoming)
 					const g = this.#resolved?.grid ?? { band: DEFAULT_BAND, dwellMs: DEFAULT_DWELL_MS, releaseBand: DEFAULT_RELEASE_BAND, releaseMs: DEFAULT_RELEASE_MS }
 					const settings = {
-						band: parseNumber(await this.#text(options, 'band', ctx), g.band, 0, 64),
-						dwellMs: parseNumber(await this.#text(options, 'dwell', ctx), g.dwellMs, 0, 10000),
-						releaseBand: parseNumber(await this.#text(options, 'releaseBand', ctx), g.releaseBand, 0, NEVER_RELEASE_BAND),
-						releaseMs: parseNumber(await this.#text(options, 'releaseMs', ctx), g.releaseMs, 0, 60000),
+						band: parseNumber(this.#text(options, 'band'), g.band, 0, 64),
+						dwellMs: parseNumber(this.#text(options, 'dwell'), g.dwellMs, 0, 10000),
+						releaseBand: parseNumber(this.#text(options, 'releaseBand'), g.releaseBand, 0, NEVER_RELEASE_BAND),
+						releaseMs: parseNumber(this.#text(options, 'releaseMs'), g.releaseMs, 0, 60000),
 					}
 					if (e.pickup.handle(inp.name, incoming, settings, send)) send(incoming)
 				},
@@ -810,10 +871,10 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'dropdown', label: 'Mode', id: 'mode', default: 'set', choices: modeChoices() },
 					{ type: 'textinput', label: 'dB (-30 to +30)', id: 'db', default: '0', useVariables: true },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
-					const n = parseNumber(await this.#text(options, 'db', ctx), NaN, -60, 60)
+					const n = parseNumber(this.#text(options, 'db'), NaN, -60, 60)
 					if (Number.isNaN(n)) return
 					e.setTrim(inp, clamp(options.mode === 'adjust' ? inp.trimDb + n : n, -30, 30))
 				},
@@ -821,8 +882,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			mute: {
 				name: 'Input: mute',
 				options: [inputOption, { type: 'dropdown', label: 'Mute', id: 'mode', default: 'toggle', choices: onOffToggle }],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (inp) await e.setMute(inp, flip(options.mode, inp.muted))
 				},
 			},
@@ -833,10 +894,10 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'dropdown', label: 'Mode', id: 'mode', default: 'set', choices: modeChoices() },
 					{ type: 'textinput', label: 'Balance (-100 = left, 0 = centre, 100 = right)', id: 'value', default: '0', useVariables: true },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
-					const n = parseNumber(await this.#text(options, 'value', ctx), NaN, -200, 200)
+					const n = parseNumber(this.#text(options, 'value'), NaN, -200, 200)
 					if (Number.isNaN(n)) return
 					const cur = (inp.balance - 0.5) * 200
 					await e.setBalance(inp, (clamp(options.mode === 'adjust' ? cur + n : n, -100, 100) + 100) / 200)
@@ -849,10 +910,10 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'dropdown', label: 'Mode', id: 'mode', default: 'set', choices: modeChoices() },
 					{ type: 'textinput', label: 'Milliseconds', id: 'value', default: '0', useVariables: true },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
-					const n = parseNumber(await this.#text(options, 'value', ctx), NaN)
+					const n = parseNumber(this.#text(options, 'value'), NaN)
 					if (Number.isNaN(n)) return
 					await e.setSync(inp, options.mode === 'adjust' ? inp.syncMs + n : n)
 				},
@@ -866,6 +927,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						label: 'Monitoring',
 						id: 'value',
 						default: 'toggle',
+						disableAutoExpression: true,
 						choices: [
 							{ id: 'toggle', label: 'Toggle (off / the type below)' },
 							{ id: 'none', label: 'Off' },
@@ -882,11 +944,11 @@ class ObsAudioInstance extends InstanceBase<Config> {
 							{ id: 'monitor', label: 'Monitor only' },
 							{ id: 'both', label: 'Monitor and output' },
 						],
-						isVisible: (o) => o.value === 'toggle',
+						isVisibleExpression: "$(options:value) == 'toggle'",
 					},
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
 					const v = options.value === 'toggle' ? (inp.monitor === 'none' ? (options.toggleTo as MonitorType) : 'none') : (options.value as MonitorType)
 					await e.setMonitor(inp, v)
@@ -899,10 +961,10 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'textinput', label: 'Tracks (e.g. 1 or 1,3,5)', id: 'tracks', default: '1', useVariables: true },
 					{ type: 'dropdown', label: 'Set', id: 'mode', default: 'toggle', choices: onOffToggle },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
-					const list = (await this.#text(options, 'tracks', ctx))
+					const list = (this.#text(options, 'tracks'))
 						.split(/[,\s]+/)
 						.map((t) => parseInt(t, 10))
 						.filter((t) => t >= 1 && t <= 6)
@@ -918,17 +980,17 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'dropdown', label: 'Filter', id: 'kind', default: 'compressor_filter', choices: FILTER_KINDS.map((k) => ({ id: k.kind, label: k.label })) },
 					{ type: 'textinput', label: 'Name (blank = standard name)', id: 'name', default: '', useVariables: true },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
-					if (inp) await e.addFilter(inp, String(options.kind), await this.#text(options, 'name', ctx))
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
+					if (inp) await e.addFilter(inp, String(options.kind), this.#text(options, 'name'))
 				},
 			},
 			filter_remove: {
 				name: 'Processing: remove a filter',
 				options: [inputOption, { type: 'textinput', label: 'Filter name', id: 'filter', default: '', useVariables: true }],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
-					if (inp) await e.removeFilter(inp, await this.#text(options, 'filter', ctx))
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
+					if (inp) await e.removeFilter(inp, this.#text(options, 'filter'))
 				},
 			},
 			filter_enable: {
@@ -938,10 +1000,10 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'textinput', label: 'Filter name', id: 'filter', default: 'Compressor', useVariables: true },
 					{ type: 'dropdown', label: 'Filter', id: 'mode', default: 'toggle', choices: onOffToggle },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
-					const name = await this.#text(options, 'filter', ctx)
+					const name = this.#text(options, 'filter')
 					const f = inp.filters.find((x) => x.name === name)
 					if (!f) return this.log('warn', `${inp.name} has no filter "${name}"`)
 					await e.setFilterEnabled(inp, name, flip(options.mode, f.enabled))
@@ -956,15 +1018,15 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'dropdown', label: 'Mode', id: 'mode', default: 'set', choices: modeChoices() },
 					{ type: 'textinput', label: 'Value', id: 'value', default: '', useVariables: true },
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
 					const p = ALL_FILTER_PARAMS.find((x) => x.id === options.param)
 					if (!p) return
-					const name = await this.#text(options, 'filter', ctx)
+					const name = this.#text(options, 'filter')
 					const f = name ? inp.filters.find((x) => x.name === name) : inp.filters.find((x) => x.kind === p.kind.kind)
 					if (!f) return this.log('warn', `${inp.name} has no ${name || p.kind.label} filter`)
-					const raw = await this.#text(options, 'value', ctx)
+					const raw = this.#text(options, 'value')
 					let value: unknown = raw
 					if (p.param.type === 'number') {
 						const n = Number(raw)
@@ -983,8 +1045,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Input: PFL (listen on OBS monitoring)',
 				description: "Uses OBS's monitoring (the headphone button in OBS's mixer). Never changes the stream or recording.",
 				options: [inputOption, { type: 'dropdown', label: 'PFL', id: 'mode', default: 'toggle', choices: onOffToggle }],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (inp) await e.monitoring.setPfl(inp, flip(options.mode, e.monitoring.pflShown(inp)))
 				},
 			},
@@ -1006,8 +1068,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						],
 					},
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (inp) await e.monitoring.setSolo(inp, flip(options.mode, e.monitoring.solo === inp.name))
 				},
 			},
@@ -1028,8 +1090,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						],
 					},
 				],
-				callback: async ({ options }, ctx) => {
-					const inp = await this.#input(options, ctx)
+				callback: async ({ options }) => {
+					const inp = this.#input(options)
 					if (!inp) return
 					if (!e.backups.mainOf(inp)) return this.log('warn', `${inp.name} isn't set as a backup for another input`)
 					const toBackup = options.to === 'backup' || (options.to === 'toggle' && !e.backups.onBackup(inp.name))
@@ -1090,8 +1152,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'textinput', label: 'Time (HH:MM, today or tomorrow if already past; blank = clear the plan)', id: 'time', default: '', useVariables: true },
 					{ type: 'checkbox', label: 'Start recording automatically at that time', id: 'auto', default: false },
 				],
-				callback: async ({ options }, ctx) => {
-					const t = await this.#text(options, 'time', ctx)
+				callback: async ({ options }) => {
+					const t = this.#text(options, 'time')
 					if (!t) return e.recorder.setPlan(null, false)
 					const m = /^(\d{1,2}):(\d{2})$/.exec(t)
 					if (!m) return this.log('warn', `Recording plan: "${t}" isn't a time like 14:30`)
@@ -1104,9 +1166,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			record_folder: {
 				name: 'Recording: set the folder',
 				options: [{ type: 'textinput', label: 'Folder (on the OBS computer)', id: 'dir', default: '', useVariables: true }],
-				callback: async ({ options }, ctx) => {
+				callback: async ({ options }) => {
 					try {
-						await e.recorder.setDirectory(await this.#text(options, 'dir', ctx))
+						await e.recorder.setDirectory(this.#text(options, 'dir'))
 					} catch (err) {
 						this.log('warn', `Recording folder: ${(err as Error).message}`)
 					}
@@ -1119,9 +1181,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'textinput', label: 'Prefix', id: 'prefix', default: '', useVariables: true },
 					{ type: 'textinput', label: 'Then (OBS date codes)', id: 'rest', default: '%CCYY-%MM-%DD %hh-%mm-%ss', useVariables: true },
 				],
-				callback: async ({ options }, ctx) => {
-					const prefix = await this.#text(options, 'prefix', ctx)
-					const rest = await this.#text(options, 'rest', ctx)
+				callback: async ({ options }) => {
+					const prefix = this.#text(options, 'prefix')
+					const rest = this.#text(options, 'rest')
 					try {
 						await e.recorder.setFilenameFormat(prefix ? `${prefix} ${rest}` : rest)
 					} catch (err) {
@@ -1136,8 +1198,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					{ type: 'dropdown', label: 'Setting', id: 'key', default: 'layout', choices: PAGE_SETTING_CHOICES },
 					{ type: 'textinput', label: 'Value', id: 'value', default: '', useVariables: true, tooltip: 'A number, true/false, a colour like #7a2fe0, or a choice (e.g. strips, rows, additive, exclusive).' },
 				],
-				callback: async ({ options }, ctx) => {
-					e.setPage(String(options.key) as keyof PageSettings, await this.#text(options, 'value', ctx))
+				callback: async ({ options }) => {
+					e.setPage(String(options.key) as keyof PageSettings, this.#text(options, 'value'))
 				},
 			},
 			notices_dismiss: {
@@ -1180,17 +1242,18 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		const e = this.engine
 		const colourOpt = (id: string, label: string, def: string, tooltip?: string) =>
 			({ type: 'textinput', label, id, default: def, useVariables: true, tooltip: tooltip ?? '#rrggbb, r,g,b or a variable. Blank = leave as is.' }) as const
-		const inputFor = async (o: CompanionOptionValues, ctx: Ctx) => e.resolve(await this.#text(o, 'input', ctx))
+		const inputFor = (o: CompanionOptionValues) => e.resolve(this.#text(o, 'input'))
 		return {
 			rider_status: {
 				type: 'advanced',
 				name: 'Auto gain: rider status colours',
+				affectedProperties: ['bgcolor'],
 				description: 'Background colour for what the rider is doing on an input',
 				options: [inputOption, ...RIDER_STATES.map((s) => colourOpt(`c_${s.id}`, s.label, STATUS_COLOURS[s.id]))],
-				callback: async (fb, ctx) => {
-					const inp = await inputFor(fb.options, ctx)
+				callback: (fb) => {
+					const inp = inputFor(fb.options)
 					if (!inp) return {}
-					const c = parseColour(await this.#text(fb.options, `c_${inp.rider.state}`, ctx), undefined)
+					const c = parseColour(this.#text(fb.options, `c_${inp.rider.state}`), undefined)
 					return c === undefined ? {} : { bgcolor: c }
 				},
 			},
@@ -1199,8 +1262,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Input: PFL is on',
 				defaultStyle: { bgcolor: rgb(0, 120, 60), color: rgb(255, 255, 255) },
 				options: [inputOption],
-				callback: async (fb, ctx) => {
-					const inp = await inputFor(fb.options, ctx)
+				callback: (fb) => {
+					const inp = inputFor(fb.options)
 					return !!inp && e.monitoring.pflShown(inp)
 				},
 			},
@@ -1209,15 +1272,15 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Input: soloed',
 				defaultStyle: { bgcolor: rgb(200, 150, 0), color: rgb(0, 0, 0) },
 				options: [inputOption],
-				callback: async (fb, ctx) => (await inputFor(fb.options, ctx))?.name === e.monitoring.solo,
+				callback: (fb) => inputFor(fb.options)?.name === e.monitoring.solo,
 			},
 			on_backup: {
 				type: 'boolean',
 				name: 'Backup: switched to the backup',
 				defaultStyle: { bgcolor: rgb(200, 100, 0), color: rgb(255, 255, 255) },
 				options: [{ ...inputOption, label: 'Backup input (name or number)' }],
-				callback: async (fb, ctx) => {
-					const inp = await inputFor(fb.options, ctx)
+				callback: (fb) => {
+					const inp = inputFor(fb.options)
 					return !!inp && e.backups.onBackup(inp.name)
 				},
 			},
@@ -1289,8 +1352,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Auto gain: rider is on',
 				defaultStyle: { bgcolor: rgb(85, 0, 170), color: rgb(255, 255, 255) },
 				options: [inputOption],
-				callback: async (fb, ctx) => {
-					const inp = await inputFor(fb.options, ctx)
+				callback: (fb) => {
+					const inp = inputFor(fb.options)
 					return !!inp && e.settings(inp.name).riderOn
 				},
 			},
@@ -1299,7 +1362,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Input: muted',
 				defaultStyle: { bgcolor: rgb(200, 0, 0), color: rgb(255, 255, 255) },
 				options: [inputOption],
-				callback: async (fb, ctx) => !!(await inputFor(fb.options, ctx))?.muted,
+				callback: (fb) => !!inputFor(fb.options)?.muted,
 			},
 			monitor_on: {
 				type: 'boolean',
@@ -1320,8 +1383,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 						],
 					},
 				],
-				callback: async (fb, ctx) => {
-					const inp = await inputFor(fb.options, ctx)
+				callback: (fb) => {
+					const inp = inputFor(fb.options)
 					if (!inp) return false
 					return fb.options.value === 'any' ? inp.monitor !== 'none' : inp.monitor === fb.options.value
 				},
@@ -1331,9 +1394,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Recording track on',
 				defaultStyle: { bgcolor: rgb(85, 0, 170), color: rgb(255, 255, 255) },
 				options: [inputOption, { type: 'textinput', label: 'Track (1-6)', id: 'track', default: '1', useVariables: true }],
-				callback: async (fb, ctx) => {
-					const inp = await inputFor(fb.options, ctx)
-					return !!inp?.tracks[await this.#text(fb.options, 'track', ctx)]
+				callback: (fb) => {
+					const inp = inputFor(fb.options)
+					return !!inp?.tracks[this.#text(fb.options, 'track')]
 				},
 			},
 			filter_on: {
@@ -1341,9 +1404,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				name: 'Processing: filter is on',
 				defaultStyle: { bgcolor: rgb(0, 120, 60), color: rgb(255, 255, 255) },
 				options: [inputOption, { type: 'textinput', label: 'Filter name', id: 'filter', default: 'Compressor', useVariables: true }],
-				callback: async (fb, ctx) => {
-					const inp = await inputFor(fb.options, ctx)
-					const name = await this.#text(fb.options, 'filter', ctx)
+				callback: (fb) => {
+					const inp = inputFor(fb.options)
+					const name = this.#text(fb.options, 'filter')
 					return !!inp?.filters.find((f) => f.name === name)?.enabled
 				},
 			},
@@ -1367,10 +1430,10 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					},
 					{ type: 'textinput', label: 'Threshold (dB)', id: 'db', default: '-6', useVariables: true },
 				],
-				callback: async (fb, ctx) => {
-					const inp = await inputFor(fb.options, ctx)
+				callback: (fb) => {
+					const inp = inputFor(fb.options)
 					if (!inp) return false
-					const th = parseNumber(await this.#text(fb.options, 'db', ctx), 0)
+					const th = parseNumber(this.#text(fb.options, 'db'), 0)
 					const max = (a: Db[]) => a.reduce<Db>((m, x) => (x !== null && (m === null || x > m) ? x : m), null)
 					const v = fb.options.meter === 'rms' ? max(inp.postMag) : fb.options.meter === 'pre' ? max(inp.prePeak) : fb.options.meter === 'level' ? inp.rider.level : max(inp.postPeak)
 					return v !== null && v >= th
@@ -1379,6 +1442,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			pickup_led: {
 				type: 'advanced',
 				name: 'Grid fader pickup LED',
+				affectedProperties: ['bgcolor'],
 				description: 'Background colour for a Grid fader using pickup. Same as the SQ module extension.',
 				options: [
 					{ type: 'textinput', label: 'Fader number', id: 'fader', default: '1', useVariables: true },
@@ -1392,26 +1456,26 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					colourOpt('trackingColour', 'Tracking: colour (brightness follows the fader)', '#ffffff'),
 					{ type: 'textinput', label: 'Flash speed (ms per on/off)', id: 'flashMs', default: String(DEFAULT_FLASH_MS), useVariables: true },
 				],
-				callback: async (fb, ctx) => {
+				callback: (fb) => {
 					const o = fb.options
-					const fader = parseNumber(await this.#text(o, 'fader', ctx), 1, 1, 999)
-					const inp = e.gridInput(Math.round(fader), await this.#text(o, 'input', ctx))
+					const fader = parseNumber(this.#text(o, 'fader'), 1, 1, 999)
+					const inp = e.gridInput(Math.round(fader), this.#text(o, 'input'))
 					if (!inp) return {}
-					const raw = await this.#text(o, 'value', ctx)
+					const raw = this.#text(o, 'value')
 					const n = Number(raw)
 					const { led, position } = e.pickup.ledState(inp.name, raw === '' || Number.isNaN(n) ? undefined : n)
-					const flashMs = parseNumber(await this.#text(o, 'flashMs', ctx), DEFAULT_FLASH_MS, 50, 5000)
+					const flashMs = parseNumber(this.#text(o, 'flashMs'), DEFAULT_FLASH_MS, 50, 5000)
 					const off = Math.floor(Date.now() / flashMs) % 2 === 1
-					const col = async (id: string, def: number) => parseColour(await this.#text(o, id, ctx), def) ?? def
+					const col = (id: string, def: number) => parseColour(this.#text(o, id), def) ?? def
 					switch (led) {
 						case 'below':
-							return { bgcolor: o.belowFlash && off ? BLACK : await col('belowColour', rgb(255, 0, 0)) }
+							return { bgcolor: o.belowFlash && off ? BLACK : col('belowColour', rgb(255, 0, 0)) }
 						case 'above':
-							return { bgcolor: o.aboveFlash && off ? BLACK : await col('aboveColour', rgb(255, 0, 0)) }
+							return { bgcolor: o.aboveFlash && off ? BLACK : col('aboveColour', rgb(255, 0, 0)) }
 						case 'catch':
-							return { bgcolor: await col('catchColour', rgb(0, 255, 0)) }
+							return { bgcolor: col('catchColour', rgb(0, 255, 0)) }
 						default:
-							return { bgcolor: scaleColour(await col('trackingColour', rgb(255, 255, 255)), position / 127) }
+							return { bgcolor: scaleColour(col('trackingColour', rgb(255, 255, 255)), position / 127) }
 					}
 				},
 			},
@@ -1420,14 +1484,18 @@ class ObsAudioInstance extends InstanceBase<Config> {
 
 	// ---- presets ------------------------------------------------------------------
 
-	#presets(): CompanionPresetDefinitions {
-		const presets: CompanionPresetDefinitions = {}
+	#presets(): { structure: CompanionPresetSection<ObsAudioTypes>[]; presets: CompanionPresetDefinitions<ObsAudioTypes> } {
+		const presets: CompanionPresetDefinitions<ObsAudioTypes> = {}
+		const structure: CompanionPresetSection<ObsAudioTypes>[] = []
 		const white = rgb(255, 255, 255)
 		const purple = rgb(85, 0, 170)
 		const L = this.label
+		/** Start a new section of presets; button() adds to the latest one */
+		const section = (id: string, name: string) => {
+			structure.push({ id, name, definitions: [] })
+		}
 		const button = (
 			id: string,
-			category: string,
 			name: string,
 			text: string,
 			down: { actionId: string; options: CompanionOptionValues }[],
@@ -1435,76 +1503,74 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			up: { actionId: string; options: CompanionOptionValues }[] = [],
 		) => {
 			presets[id] = {
-				type: 'button',
-				category,
+				type: 'simple',
 				name,
 				style: { text, size: 'auto', color: white, bgcolor: BLACK },
 				steps: [{ down, up }],
 				feedbacks,
 			}
+			;(structure[structure.length - 1].definitions as string[]).push(id)
 		}
 
 		// overall
-		const all = 'OBS Audio'
-		button('open_page', all, 'Open the fader page (on this computer)', 'FADER\\nPAGE', [{ actionId: 'open_page', options: {} }])
-		button('page_url', all, 'Fader page address', '$(' + L + ':page_url)', [], [])
-		button('connected', all, 'OBS connection', 'OBS', [], [{ feedbackId: 'connected', options: {}, style: { bgcolor: rgb(0, 120, 60) } }])
-		button('update', all, 'Update available', 'UPDATE', [{ actionId: 'open_page', options: {} }], [{ feedbackId: 'update_available', options: { which: 'either' }, style: { bgcolor: purple } }])
-		button('riders_on', all, 'All riders on', 'ALL\\nRIDERS\\nON', [{ actionId: 'rider_all', options: { mode: 'on' } }])
-		button('riders_off', all, 'All riders off', 'ALL\\nRIDERS\\nOFF', [{ actionId: 'rider_all', options: { mode: 'off' } }])
-		button('record', all, 'Record start / stop', 'REC\\n$(' + L + ':rec_time)', [{ actionId: 'record', options: { mode: 'toggle' } }], [
+		section('overall', 'OBS Audio')
+		button('open_page', 'Open the fader page (on this computer)', 'FADER\\nPAGE', [{ actionId: 'open_page', options: {} }])
+		button('page_url', 'Fader page address', '$(' + L + ':page_url)', [], [])
+		button('connected', 'OBS connection', 'OBS', [], [{ feedbackId: 'connected', options: {}, style: { bgcolor: rgb(0, 120, 60) } }])
+		button('update', 'Update available', 'UPDATE', [{ actionId: 'open_page', options: {} }], [{ feedbackId: 'update_available', options: { which: 'either' }, style: { bgcolor: purple } }])
+		button('riders_on', 'All riders on', 'ALL\\nRIDERS\\nON', [{ actionId: 'rider_all', options: { mode: 'on' } }])
+		button('riders_off', 'All riders off', 'ALL\\nRIDERS\\nOFF', [{ actionId: 'rider_all', options: { mode: 'off' } }])
+		button('record', 'Record start / stop', 'REC\\n$(' + L + ':rec_time)', [{ actionId: 'record', options: { mode: 'toggle' } }], [
 			{ feedbackId: 'recording', options: { state: 'active' }, style: { bgcolor: rgb(200, 0, 0) } },
 			{ feedbackId: 'recording', options: { state: 'paused' }, style: { bgcolor: rgb(150, 100, 0) } },
 		])
-		button('record_next', all, 'Next recording start and countdown', 'NEXT REC\\n$(' + L + ':rec_next)\\n$(' + L + ':rec_countdown)', [], [
+		button('record_next', 'Next recording start and countdown', 'NEXT REC\\n$(' + L + ':rec_next)\\n$(' + L + ':rec_countdown)', [], [
 			{ feedbackId: 'recording', options: { state: 'due' }, style: { bgcolor: purple } },
 		])
-		button('notices', all, 'Pop-ups waiting (press to dismiss all)', 'POP-UPS\\n$(' + L + ':notices)', [{ actionId: 'notices_dismiss', options: {} }], [
+		button('notices', 'Pop-ups waiting (press to dismiss all)', 'POP-UPS\\n$(' + L + ':notices)', [{ actionId: 'notices_dismiss', options: {} }], [
 			{ feedbackId: 'notice_active', options: {}, style: { bgcolor: rgb(200, 100, 0) } },
 		])
 
 		this.engine.visible().forEach((inp, idx) => {
 			const n = idx + 1
 			const i = String(n)
-			const category = `Input ${n}: ${inp.name}`
+			section(`input_${n}`, `Input ${n}: ${inp.name}`)
 			const name = `$(${L}:in${n}_name)`
 			button(
 				`ag_${n}`,
-				category,
 				'Auto gain button: press = this level, double tap = calibrate, hold = calibrate to module level',
 				`${name}\\nAG $(${L}:in${n}_target)`,
 				[{ actionId: 'ag_button', options: { input: i, edge: 'down' } }],
 				[{ feedbackId: 'rider_status', options: { input: i, ...Object.fromEntries(RIDER_STATES.map((st) => [`c_${st.id}`, STATUS_COLOURS[st.id]])) } }],
 				[{ actionId: 'ag_button', options: { input: i, edge: 'up' } }],
 			)
-			button(`rider_${n}`, category, 'Rider on / off', `${name}\\nRIDER`, [{ actionId: 'ag_rider', options: { input: i, mode: 'toggle' } }], [
+			button(`rider_${n}`, 'Rider on / off', `${name}\\nRIDER`, [{ actionId: 'ag_rider', options: { input: i, mode: 'toggle' } }], [
 				{ feedbackId: 'rider_on', options: { input: i }, style: { bgcolor: purple, color: white } },
 			])
-			button(`status_${n}`, category, 'Rider status and target', `${name}\\n$(${L}:in${n}_rider)\\n$(${L}:in${n}_target)`, [], [
+			button(`status_${n}`, 'Rider status and target', `${name}\\n$(${L}:in${n}_rider)\\n$(${L}:in${n}_target)`, [], [
 				{ feedbackId: 'rider_status', options: { input: i, ...Object.fromEntries(RIDER_STATES.map((st) => [`c_${st.id}`, STATUS_COLOURS[st.id]])) } },
 			])
-			button(`capture_${n}`, category, 'This level please', `${name}\\nTHIS\\nLEVEL`, [{ actionId: 'ag_capture', options: { input: i } }])
-			button(`cal_${n}`, category, "Calibrate to the input's level", `${name}\\nCAL\\n$(${L}:in${n}_cal)`, [{ actionId: 'ag_calibrate', options: { input: i, to: 'input' } }])
-			button(`calm_${n}`, category, 'Calibrate to the module level', `${name}\\nCAL\\nMODULE`, [{ actionId: 'ag_calibrate', options: { input: i, to: 'module' } }])
-			button(`mute_${n}`, category, 'Mute', `${name}\\nMUTE`, [{ actionId: 'mute', options: { input: i, mode: 'toggle' } }], [
+			button(`capture_${n}`, 'This level please', `${name}\\nTHIS\\nLEVEL`, [{ actionId: 'ag_capture', options: { input: i } }])
+			button(`cal_${n}`, "Calibrate to the input's level", `${name}\\nCAL\\n$(${L}:in${n}_cal)`, [{ actionId: 'ag_calibrate', options: { input: i, to: 'input' } }])
+			button(`calm_${n}`, 'Calibrate to the module level', `${name}\\nCAL\\nMODULE`, [{ actionId: 'ag_calibrate', options: { input: i, to: 'module' } }])
+			button(`mute_${n}`, 'Mute', `${name}\\nMUTE`, [{ actionId: 'mute', options: { input: i, mode: 'toggle' } }], [
 				{ feedbackId: 'muted', options: { input: i }, style: { bgcolor: rgb(200, 0, 0), color: white } },
 			])
-			button(`pfl_${n}`, category, 'PFL', `${name}\\nPFL`, [{ actionId: 'pfl', options: { input: i, mode: 'toggle' } }], [
+			button(`pfl_${n}`, 'PFL', `${name}\\nPFL`, [{ actionId: 'pfl', options: { input: i, mode: 'toggle' } }], [
 				{ feedbackId: 'pfl_on', options: { input: i }, style: { bgcolor: rgb(0, 120, 60), color: white } },
 			])
 			button(
 				`solo_${n}`,
-				category,
 				'Solo (hold)',
 				`${name}\\nSOLO`,
 				[{ actionId: 'solo', options: { input: i, mode: 'on' } }],
 				[{ feedbackId: 'solo_on', options: { input: i }, style: { bgcolor: rgb(200, 150, 0), color: BLACK } }],
 				[{ actionId: 'solo', options: { input: i, mode: 'off' } }],
 			)
-			button(`solol_${n}`, category, 'Solo (latching)', `${name}\\nSOLO\\nLATCH`, [{ actionId: 'solo', options: { input: i, mode: 'toggle' } }], [
+			button(`solol_${n}`, 'Solo (latching)', `${name}\\nSOLO\\nLATCH`, [{ actionId: 'solo', options: { input: i, mode: 'toggle' } }], [
 				{ feedbackId: 'solo_on', options: { input: i }, style: { bgcolor: rgb(200, 150, 0), color: BLACK } },
 			])
-			button(`level_${n}`, category, 'Level readout', `${name}\\n$(${L}:in${n}_vol) dB\\n$(${L}:in${n}_peak)`, [], [
+			button(`level_${n}`, 'Level readout', `${name}\\n$(${L}:in${n}_vol) dB\\n$(${L}:in${n}_peak)`, [], [
 				{ feedbackId: 'level_above', options: { input: i, meter: 'peak', db: '-18' }, style: { bgcolor: rgb(0, 100, 0) } },
 				{ feedbackId: 'level_above', options: { input: i, meter: 'peak', db: '-6' }, style: { bgcolor: rgb(150, 120, 0) } },
 				{ feedbackId: 'level_above', options: { input: i, meter: 'peak', db: '-1' }, style: { bgcolor: rgb(200, 0, 0) } },
@@ -1516,29 +1582,27 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				['dn3', '-3 dB', 'adjust', '-3'],
 				['unity', '0 dB', 'set', '0'],
 			]) {
-				button(`fader_${id}_${n}`, category, `Fader ${label}`, `${name}\\nFADER\\n${label}`, [{ actionId: 'volume', options: { input: i, mode, db, fade: '0' } }])
+				button(`fader_${id}_${n}`, `Fader ${label}`, `${name}\\nFADER\\n${label}`, [{ actionId: 'volume', options: { input: i, mode, db, fade: '0' } }])
 			}
-			button(`trim_up_${n}`, category, 'Trim +1 dB', `${name}\\nTRIM\\n+1 dB`, [{ actionId: 'trim', options: { input: i, mode: 'adjust', db: '1' } }])
-			button(`trim_dn_${n}`, category, 'Trim -1 dB', `${name}\\nTRIM\\n-1 dB`, [{ actionId: 'trim', options: { input: i, mode: 'adjust', db: '-1' } }])
+			button(`trim_up_${n}`, 'Trim +1 dB', `${name}\\nTRIM\\n+1 dB`, [{ actionId: 'trim', options: { input: i, mode: 'adjust', db: '1' } }])
+			button(`trim_dn_${n}`, 'Trim -1 dB', `${name}\\nTRIM\\n-1 dB`, [{ actionId: 'trim', options: { input: i, mode: 'adjust', db: '-1' } }])
 			for (let t = 1; t <= 6; t++) {
-				button(`track_${n}_${t}`, category, `Track ${t}`, `${name}\\nTRK ${t}`, [{ actionId: 'tracks', options: { input: i, tracks: String(t), mode: 'toggle' } }], [
+				button(`track_${n}_${t}`, `Track ${t}`, `${name}\\nTRK ${t}`, [{ actionId: 'tracks', options: { input: i, tracks: String(t), mode: 'toggle' } }], [
 					{ feedbackId: 'track_on', options: { input: i, track: String(t) }, style: { bgcolor: purple, color: white } },
 				])
 			}
 			for (const f of inp.filters) {
 				if (f.name === this.engine.settings(inp.name).trimFilterName) continue
-				button(`filter_${n}_${slug(f.name)}`, category, `${f.name} on / off`, `${name}\\n${f.name.toUpperCase()}`, [
+				button(`filter_${n}_${slug(f.name)}`, `${f.name} on / off`, `${name}\\n${f.name.toUpperCase()}`, [
 					{ actionId: 'filter_enable', options: { input: i, filter: f.name, mode: 'toggle' } },
 				], [{ feedbackId: 'filter_on', options: { input: i, filter: f.name }, style: { bgcolor: rgb(0, 120, 60), color: white } }])
 			}
 			if (this.engine.backups.mainOf(inp)) {
-				button(`backup_${n}`, category, 'Switch between main and this backup', `${name}\\nBACKUP`, [{ actionId: 'backup_switch', options: { input: i, to: 'toggle' } }], [
+				button(`backup_${n}`, 'Switch between main and this backup', `${name}\\nBACKUP`, [{ actionId: 'backup_switch', options: { input: i, to: 'toggle' } }], [
 					{ feedbackId: 'on_backup', options: { input: i }, style: { bgcolor: rgb(200, 100, 0), color: white } },
 				])
 			}
 		})
-		return presets
+		return { structure, presets }
 	}
 }
-
-runEntrypoint(ObsAudioInstance, [])
