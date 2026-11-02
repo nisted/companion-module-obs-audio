@@ -126,6 +126,7 @@ Use **Fader: from a value (Intech Grid fader), with pickup** in a trigger that r
 
 - Fader 1 drives the first input in the list, fader 2 the second, and so on, unless an input is given.
 - Pickup works as in the SQ module extension: catch band and dwell, then latched until OBS is moved elsewhere (release band and time).
+- The catch and release settings belong to each connection: set them on the connection page, under **Grid fader pickup**. A main and a backup OBS connection each have their own. They also show as variables (`grid_catch_band`, `grid_dwell_ms`, `grid_release_band`, `grid_release_ms`). A value typed into an action overrides the connection's setting for that action only.
 - Show it on the fader's LED with the **Grid fader pickup LED** feedback.
 
 ### Presets

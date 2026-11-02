@@ -33,6 +33,10 @@ interface Config {
 	pin: string
 	varRateHz: string | number
 	updateHours: string | number
+	gridBand?: string | number
+	gridDwellMs?: string | number
+	gridReleaseBand?: string | number
+	gridReleaseMs?: string | number
 	/** The module's own settings, saved here by the module (not edited by hand) */
 	store?: string
 	autosave?: string
@@ -49,6 +53,7 @@ interface Resolved {
 	pin: string
 	varRateHz: number
 	updateHours: number
+	grid: { band: number; dwellMs: number; releaseBand: number; releaseMs: number }
 }
 
 const PAGE_SETTING_CHOICES = (Object.keys(PAGE_DEFAULTS) as (keyof PageSettings)[]).map((k) => ({ id: k, label: k }))
@@ -155,6 +160,12 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			pin: await parse(c.pin),
 			varRateHz: parseNumber(await parse(c.varRateHz), 5, 1, 20),
 			updateHours: parseNumber(await parse(c.updateHours), 12, 0, 720),
+			grid: {
+				band: parseNumber(await parse(c.gridBand), DEFAULT_BAND, 0, 64),
+				dwellMs: parseNumber(await parse(c.gridDwellMs), DEFAULT_DWELL_MS, 0, 10000),
+				releaseBand: parseNumber(await parse(c.gridReleaseBand), DEFAULT_RELEASE_BAND, 0, NEVER_RELEASE_BAND),
+				releaseMs: parseNumber(await parse(c.gridReleaseMs), DEFAULT_RELEASE_MS, 0, 60000),
+			},
 		}
 		const old = this.#resolved
 		this.#resolved = r
@@ -173,6 +184,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 		}
 		if (!old || old.varRateHz !== r.varRateHz) this.#restartVarTimer()
 		if (!old || old.updateHours !== r.updateHours) this.engine.setUpdateChecks(r.updateHours)
+		if (!old || JSON.stringify(old.grid) !== JSON.stringify(r.grid)) {
+			this.setVariableValues(this.#urlVariables())
+		}
 	}
 
 	#status(): void {
@@ -225,7 +239,15 @@ class ObsAudioInstance extends InstanceBase<Config> {
 
 	#urlVariables(): CompanionVariableValues {
 		const urls = this.#pageUrls()
-		return { page_url: urls[0] ?? '', page_urls: urls.join(' ') }
+		const g = this.#resolved?.grid
+		return {
+			page_url: urls[0] ?? '',
+			page_urls: urls.join(' '),
+			grid_catch_band: g?.band ?? DEFAULT_BAND,
+			grid_dwell_ms: g?.dwellMs ?? DEFAULT_DWELL_MS,
+			grid_release_band: g?.releaseBand ?? DEFAULT_RELEASE_BAND,
+			grid_release_ms: g?.releaseMs ?? DEFAULT_RELEASE_MS,
+		}
 	}
 
 	override getConfigFields(): SomeCompanionConfigField[] {
@@ -316,6 +338,45 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				default: '12',
 				tooltip: 'How often to check GitHub for a newer OBS Audio module and OBS. Needs internet access. 0 = never.' + VAR,
 			},
+			{
+				type: 'static-text',
+				id: 'gridInfo',
+				label: 'Grid fader pickup (this connection)',
+				width: 12,
+				value: "Used by 'Fader: from a value (Intech Grid fader), with pickup' wherever its own pickup fields are left blank. Each OBS Audio connection (e.g. main and backup OBS) has its own.",
+			},
+			{
+				type: 'textinput',
+				id: 'gridBand',
+				label: `Catch band (± fader steps of 127, default ${DEFAULT_BAND})`,
+				width: 3,
+				default: String(DEFAULT_BAND),
+				tooltip: "How close the Grid fader must come to OBS's level before it takes over." + VAR,
+			},
+			{
+				type: 'textinput',
+				id: 'gridDwellMs',
+				label: `Dwell time (ms, default ${DEFAULT_DWELL_MS})`,
+				width: 3,
+				default: String(DEFAULT_DWELL_MS),
+				tooltip: 'How long the Grid fader must sit inside the catch band before it takes over.' + VAR,
+			},
+			{
+				type: 'textinput',
+				id: 'gridReleaseBand',
+				label: `Release band (± fader steps, default ${DEFAULT_RELEASE_BAND}, ${NEVER_RELEASE_BAND} = never)`,
+				width: 3,
+				default: String(DEFAULT_RELEASE_BAND),
+				tooltip: 'Once latched, only an OBS-side move bigger than this lets go of the Grid fader.' + VAR,
+			},
+			{
+				type: 'textinput',
+				id: 'gridReleaseMs',
+				label: `Release time (ms, default ${DEFAULT_RELEASE_MS})`,
+				width: 3,
+				default: String(DEFAULT_RELEASE_MS),
+				tooltip: 'How long an OBS-side move must stay outside the release band before the Grid fader lets go.' + VAR,
+			},
 		]
 	}
 
@@ -367,6 +428,10 @@ class ObsAudioInstance extends InstanceBase<Config> {
 			{ variableId: 'obs_update', name: 'OBS: update available' },
 			{ variableId: 'obs_error', name: 'Why OBS is not connected (blank when connected)' },
 			{ variableId: 'page_url', name: 'Fader page address' },
+			{ variableId: 'grid_catch_band', name: 'Grid fader pickup: catch band (this connection)' },
+			{ variableId: 'grid_dwell_ms', name: 'Grid fader pickup: dwell time ms (this connection)' },
+			{ variableId: 'grid_release_band', name: 'Grid fader pickup: release band (this connection)' },
+			{ variableId: 'grid_release_ms', name: 'Grid fader pickup: release time ms (this connection)' },
 			{ variableId: 'page_urls', name: 'Fader page addresses (all network connections)' },
 			{ variableId: 'rec_state', name: 'Recording: recording / paused / stopped' },
 			{ variableId: 'rec_time', name: 'Recording: time so far' },
@@ -689,18 +754,18 @@ class ObsAudioInstance extends InstanceBase<Config> {
 							"Don't change OBS until the fader sits within the catch band of the OBS level for the dwell time, then stay latched until OBS is moved elsewhere. Show the state with the 'Grid fader pickup LED' feedback.",
 						isVisible: (o) => o.valueType !== 'db',
 					},
-					{ type: 'textinput', label: 'Catch band (± fader steps, of 127)', id: 'band', default: String(DEFAULT_BAND), useVariables: true, isVisible: (o) => o.valueType !== 'db' && o.pickup === true },
-					{ type: 'textinput', label: 'Dwell time (ms)', id: 'dwell', default: String(DEFAULT_DWELL_MS), useVariables: true, isVisible: (o) => o.valueType !== 'db' && o.pickup === true },
+					{ type: 'textinput', label: 'Catch band (blank = this connection\'s setting)', id: 'band', default: '', useVariables: true, isVisible: (o) => o.valueType !== 'db' && o.pickup === true },
+					{ type: 'textinput', label: 'Dwell time ms (blank = this connection\'s setting)', id: 'dwell', default: '', useVariables: true, isVisible: (o) => o.valueType !== 'db' && o.pickup === true },
 					{
 						type: 'textinput',
-						label: 'Release band (± fader steps, of 127)',
+						label: 'Release band (blank = this connection\'s setting)',
 						id: 'releaseBand',
-						default: String(DEFAULT_RELEASE_BAND),
+						default: '',
 						useVariables: true,
-						tooltip: `Once latched, only an OBS-side move bigger than this lets go. ${NEVER_RELEASE_BAND} = never.`,
+						tooltip: `Once latched, only an OBS-side move bigger than this lets go. ${NEVER_RELEASE_BAND} = never. Leave blank to use the connection's setting.`,
 						isVisible: (o) => o.valueType !== 'db' && o.pickup === true,
 					},
-					{ type: 'textinput', label: 'Release time (ms)', id: 'releaseMs', default: String(DEFAULT_RELEASE_MS), useVariables: true, isVisible: (o) => o.valueType !== 'db' && o.pickup === true },
+					{ type: 'textinput', label: 'Release time ms (blank = this connection\'s setting)', id: 'releaseMs', default: '', useVariables: true, isVisible: (o) => o.valueType !== 'db' && o.pickup === true },
 				],
 				callback: async ({ options }, ctx) => {
 					const fader = parseNumber(await this.#text(options, 'fader', ctx), 1, 1, 999)
@@ -717,11 +782,12 @@ class ObsAudioInstance extends InstanceBase<Config> {
 					const incoming = clamp(n, 0, 127)
 					const send = (pos: number) => e.setVolume(inp, positionToDb(pos / 127, e.law))
 					if (options.pickup !== true) return send(incoming)
+					const g = this.#resolved?.grid ?? { band: DEFAULT_BAND, dwellMs: DEFAULT_DWELL_MS, releaseBand: DEFAULT_RELEASE_BAND, releaseMs: DEFAULT_RELEASE_MS }
 					const settings = {
-						band: parseNumber(await this.#text(options, 'band', ctx), DEFAULT_BAND, 0, 64),
-						dwellMs: parseNumber(await this.#text(options, 'dwell', ctx), DEFAULT_DWELL_MS, 0, 10000),
-						releaseBand: parseNumber(await this.#text(options, 'releaseBand', ctx), DEFAULT_RELEASE_BAND, 0, NEVER_RELEASE_BAND),
-						releaseMs: parseNumber(await this.#text(options, 'releaseMs', ctx), DEFAULT_RELEASE_MS, 0, 60000),
+						band: parseNumber(await this.#text(options, 'band', ctx), g.band, 0, 64),
+						dwellMs: parseNumber(await this.#text(options, 'dwell', ctx), g.dwellMs, 0, 10000),
+						releaseBand: parseNumber(await this.#text(options, 'releaseBand', ctx), g.releaseBand, 0, NEVER_RELEASE_BAND),
+						releaseMs: parseNumber(await this.#text(options, 'releaseMs', ctx), g.releaseMs, 0, 60000),
 					}
 					if (e.pickup.handle(inp.name, incoming, settings, send)) send(incoming)
 				},
