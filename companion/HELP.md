@@ -181,3 +181,7 @@ Overall:
 - The input list follows OBS's input order, which isn't always the order of OBS's mixer. Reorder it in Settings → Inputs.
 - obs-websocket doesn't report gain reduction from OBS's compressor and limiter, so there are no gain-reduction meters.
 - The page uses web fonts when online and falls back to built-in fonts at a venue without internet.
+
+### Psst. This one's got mates. 🍹
+
+OBS Audio is part of a little crew of Companion modules: some brand new, some old favourites given a good tweak. Want to know who else is in the crew, or grab the freshest version of each one? It's all here: [github.com/nisted/companion-modules](https://github.com/nisted/companion-modules)

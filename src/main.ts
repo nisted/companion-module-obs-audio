@@ -377,6 +377,16 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				default: String(DEFAULT_RELEASE_MS),
 				tooltip: 'How long an OBS-side move must stay outside the release band before the Grid fader lets go.' + VAR,
 			},
+			{
+				type: 'static-text',
+				id: 'bundle',
+				label: "Psst. This one's got mates. 🍹",
+				width: 12,
+				value:
+					'OBS Audio is part of a little crew of Companion modules: some brand new, some old favourites given a good tweak. ' +
+					"Want to know who else is in the crew, or grab the freshest version of each one? It's all here: " +
+					'<a href="https://github.com/nisted/companion-modules" target="_blank">github.com/nisted/companion-modules</a>',
+			},
 		]
 	}
 
