@@ -223,7 +223,7 @@ export class Backups {
 						kind: 'backup-back',
 						input: backup.name,
 						title: `${main.name} is back`,
-						message: `${main.name} has looked healthy for ${Math.round(set.backupRecoverMs / 1000)} s. You're still on the backup, ${backup.name}. It won't switch back by itself.`,
+						message: `${main.name} has looked healthy for ${Math.round(set.backupRecoverMs / 1000)} s. You're still on the backup, ${backup.name}. I won't switch back unless you say so.`,
 						actions: [
 							{ id: 'take', label: `Take ${main.name}` },
 							{ id: 'snooze', label: 'Snooze' },
@@ -251,12 +251,12 @@ export class Backups {
 		p.since = undefined
 		this.host.fadeTo(main, null, set.backupFadeMs)
 		this.host.fadeTo(backup, p.mainLevel ?? 0, set.backupFadeMs)
-		this.host.log('warn', `Switched ${main.name} to its backup ${backup.name}: ${why}`)
+		this.host.log('warn', `Switched ${main.name} over to its backup, ${backup.name}: ${why}`)
 		this.notices.removeKind('backup-back', backup.name)
 		this.notices.add({
 			kind: 'backup-switched',
 			input: backup.name,
-			title: `Switched to backup: ${backup.name}`,
+			title: `Switched to the backup: ${backup.name}`,
 			message: `${main.name} → ${backup.name} at ${new Date().toLocaleTimeString()}, because ${why}.`,
 			actions: [{ id: 'dismiss', label: 'OK' }],
 		})
@@ -275,7 +275,7 @@ export class Backups {
 		p.offset = null
 		this.notices.removeKind('backup-back', backup.name)
 		this.notices.removeKind('backup-switched', backup.name)
-		this.host.log('info', `Back on ${main.name} (from backup ${backup.name})`)
+		this.host.log('info', `Back on ${main.name} again (from the backup, ${backup.name})`)
 		this.host.changed()
 	}
 
@@ -294,7 +294,7 @@ export class Backups {
 		np.mainLevel = p.backupLevel
 		this.notices.removeKind('backup-back', backup.name)
 		this.notices.removeKind('backup-switched', backup.name)
-		this.host.log('info', `${backup.name} is now the main, with ${main.name} as its backup`)
+		this.host.log('info', `Swapped roles: ${backup.name} is now the main, with ${main.name} as its backup`)
 		this.host.changed()
 	}
 
@@ -484,11 +484,11 @@ export class Recorder {
 		const now = Date.now()
 		if (plan.autoStart) {
 			if (now >= due) {
-				this.host.log('info', 'Starting the planned recording')
+				this.host.log('info', 'Starting the planned recording, as booked')
 				try {
 					await this.start()
 				} catch (e) {
-					this.host.log('warn', `Couldn't start the planned recording: ${(e as Error).message}`)
+					this.host.log('warn', `Couldn't start the planned recording, so it's not rolling: ${(e as Error).message}`)
 				}
 			}
 			return
@@ -501,7 +501,7 @@ export class Recorder {
 			this.notices.add({
 				kind: 'record-due',
 				title: 'Start recording?',
-				message: now >= due ? `Recording was due to start at ${at}.` : `Recording is due to start at ${at}.`,
+				message: now >= due ? `Recording was due to start at ${at}. Shall we?` : `Recording is due to start at ${at}.`,
 				actions: [
 					{ id: 'start', label: 'Start recording' },
 					{ id: 'snooze', label: `Snooze ${this.host.recordSnoozeMin()} min` },

@@ -1,6 +1,6 @@
 ## OBS Audio
 
-An audio desk for OBS Studio. It gives you:
+A proper audio desk for OBS Studio. Here's what's in the box:
 
 - an auto gain rider and calibrate on each input
 - Intech Grid (or any MIDI) faders with pickup
@@ -10,11 +10,11 @@ An audio desk for OBS Studio. It gives you:
 - OBS's own processing filters and recording tracks
 - a fader and meter page in any browser, or as an OBS dock
 
-It runs alongside the official OBS module. Both can be connected to OBS at once.
+It's happy to share. Run it alongside the official OBS module and both can be connected to OBS at once.
 
-### Setup
+### Setting it up
 
-**1. Turn on OBS's WebSocket server.** It's off by default. In OBS: **Tools → WebSocket Server Settings**:
+**1. Turn on OBS's WebSocket server.** It's off out of the box. In OBS, go to **Tools → WebSocket Server Settings**, then:
 
 - tick **Enable WebSocket server**
 - note the **Server Port** (normally 4455)
@@ -22,87 +22,87 @@ It runs alongside the official OBS module. Both can be connected to OBS at once.
 
 ![OBS WebSocket Server Settings](images/obs-websocket-settings.png)
 
-**2. Add this connection** and enter:
+**2. Add this connection** and fill in:
 
-- OBS's address: `127.0.0.1` if OBS is on this computer
+- where OBS lives: `127.0.0.1` if it's on this computer
 - the port
-- the password, or blank if authentication is off
+- the password, or leave it blank if authentication is off
 
-Every field can take a Companion variable, such as `$(custom:obs_ip)`. Hover over a field for what it does.
+Every field takes a Companion variable too, such as `$(custom:obs_ip)`. Not sure what a field does? Hover over it and it'll tell you.
 
-**3. Open the fader page.** The connection's page shows its address as a link. You can also use:
+**3. Open the fader page.** The connection's page shows its address as a link. Or, take your pick:
 
 - the **Open the fader page** preset
 - the `$(OBS_Audio:page_url)` variable
 - `http://<this computer's address>:8890/`
 
-**Fader page available on** sets who can open it: every network, this computer only, or one network. Set a PIN if others on the network shouldn't change things.
+**Fader page available on** decides who can open it: every network, this computer only, or one network. If others on the network shouldn't be fiddling, set a PIN.
 
-**4. To use it inside OBS:** **Docks → Custom Browser Docks**, then add the same address.
+**4. Want it inside OBS?** Go to **Docks → Custom Browser Docks** and add the same address.
 
 #### If it won't connect
 
-The connection's status says why, in plain words:
+The connection's status tells you why, in plain words:
 
 - **Can't reach OBS:** OBS isn't running, its WebSocket server is off, or the address or port is wrong.
 - **Password is wrong:** copy it again from Show Connect Info, or turn authentication off.
-- **Lost the connection:** OBS closed, or the network dropped. It keeps trying.
+- **Lost the connection:** OBS closed, or the network dropped. I'll keep trying.
 
-If OBS is on another computer, its firewall must allow the port.
+If OBS is on another computer, its firewall needs to let the port through.
 
 ### The fader page
 
-Each input is a strip, like a sound desk. From left to right:
+Each input gets a strip, just like a sound desk. Left to right:
 
 - **Fader and meters.** PRE is the level before the fader; POST is what's recorded. Each strip has PRE / POST / FINE buttons, and the meter shows the rider's target line and band. Drag the fader; use FINE (or two fingers) for small moves; double tap for 0 dB.
-- **Channel settings.** Basic auto gain sits at the top, with sections of controls under it. Knobs work by dragging up and down: Shift for fine, double click to reset, click the value to type one.
+- **Channel settings.** Basic auto gain sits at the top, with sections of controls underneath. Knobs work by dragging up and down: Shift for fine, double click to reset, click the value to type one.
 - **Show advanced.** Opens every auto gain and backup setting over the channel settings. **Pin** keeps it open as a third column.
-- **MUTE / PFL / SOLO** at the bottom of each strip.
+- **MUTE / PFL / SOLO** live at the bottom of each strip.
 
 Drag a strip's right edge to change its width. Tick **Match widths** to size them all together.
 
-Every page setting is in **⚙ Settings**, a floating panel you can drag aside while you keep working. It's also available from Companion with **Fader page: change a setting**. That includes:
+Every page setting lives in **⚙ Settings**, a floating panel you can drag out of the way while you keep working. You can reach them from Companion too, with **Fader page: change a setting**. That covers:
 
 - layout, colours and meters
 - tooltips on or off
 - tip of the day on or off
 
-Sections are yours to arrange: in **Settings → Sections**, add, rename and reorder them, and choose what's in each and whether each is hidden, always open or collapsible. **Settings → Inputs** overrides that per input, and orders or hides inputs.
+Sections are yours to arrange however you like. In **Settings → Sections**, add, rename and reorder them, and choose what goes in each and whether each is hidden, always open or collapsible. **Settings → Inputs** overrides that per input, and orders or hides inputs.
 
-**Settings → Export / import** exports everything. On import, tick what to apply. The settings in use are kept as an autosave first, so an import can be rolled back.
+**Settings → Export / import** exports the lot. On import, tick what to bring in. The settings in use are kept as an autosave first, so if an import goes sideways you can roll it back.
 
 ### PFL and solo
 
-PFL and solo only ever change OBS's **monitoring** (your headphones). The stream and the recording are never touched. Set the monitoring device in OBS: **Settings → Audio → Advanced → Monitoring Device**.
+PFL and solo only ever touch OBS's **monitoring** (your headphones). The stream and the recording are left well alone. Set the monitoring device in OBS: **Settings → Audio → Advanced → Monitoring Device**.
 
 - **PFL** sets an input's monitoring to "Monitor and Output". In the header, **PFL ADD** means PFLs add up; **PFL EXCL** means a new PFL cancels the others.
 - **SOLO** lets you hear just one input. It works only while held, unless **Solo latch** is ticked. When solo ends, every PFL goes back to how it was.
 
 ### Backup feeds
 
-You can make an input the backup of another, for example a second radio mic on the same presenter. In the backup's strip, go to **Input → Backup for**, then turn on **Auto switch** under Show advanced → Backup feed.
+Any input can be the backup of another, say a second radio mic on the same presenter. In the backup's strip, go to **Input → Backup for**, then turn on **Auto switch** under Show advanced → Backup feed.
 
-If the main drops out, or goes much louder or quieter than usual against the backup, while the backup is healthy, it crossfades to the backup and a pop-up says why. **It never switches back by itself.** When the main has looked healthy for a while, a pop-up offers:
+If the main drops out, or goes much louder or quieter than usual against the backup, while the backup is healthy, it crossfades to the backup and a pop-up tells you why. **It never switches back by itself.** Once the main has looked healthy for a while, a pop-up offers:
 
 - **Take** the main
 - **Snooze**
 - **Swap roles**: the backup becomes the main
 - **Dismiss**
 
-Every threshold and time is a setting.
+Every threshold and time is a setting, so tune away.
 
 ### Recording
 
-- **● REC** in the header starts OBS recording. Pressing it while recording asks "Stop recording?", then "Are you definitely sure?".
+- **● REC** in the header starts OBS recording. Press it while recording and it asks "Stop recording?", then "Are you definitely sure?". (Belt and braces. 🎙️)
 - After stopping, it asks when recording is due to restart, with an option to start automatically. Skip leaves it stopped.
-- A planned start shows as a countdown in the header. If it isn't automatic, a large **Start recording?** pop-up appears 10 minutes before (a setting), offering Start, Snooze, Set a new time and Dismiss. Nothing blocks the page.
+- A planned start shows as a countdown in the header. If it isn't automatic, a big **Start recording?** pop-up appears 10 minutes before (that's a setting), offering Start, Snooze, Set a new time and Dismiss. Nothing blocks the page.
 - **Settings → Recording** sets OBS's recording folder and file name format (put a prefix before OBS's date codes). It also shows the last file, and how many recordings are in the folder when OBS is on this computer.
 
 ### Auto gain
 
 Each input has a **rider** (on/off) and **calibrate**.
 
-- **This level please:** set the fader by ear, then capture that level as the target. The rider leaves it alone while the level stays inside the band, and rides it back when it drifts out.
+- **This level please:** set the fader by ear, then capture that level as the target. The rider leaves it alone while the level stays inside the band, and rides it back when it wanders out.
 - **Calibrate:** brings the input to a set level once, then stops.
 - **The input button** (the per-input preset "AG"):
   - **press** = this level please
@@ -111,22 +111,22 @@ Each input has a **rider** (on/off) and **calibrate**.
 
   Timings are in Settings → Buttons.
 
-What it moves is a setting per input:
+What it moves is up to you, per input:
 
 - the **OBS fader**: it measures after the fader
 - a **trim**: a Gain filter it adds before the fader. It measures before the fader, so the fader stays yours.
 
 Every setting has a page-wide default (Settings → Auto gain defaults) and can be changed per input under Show advanced. Changed values show purple, and ↺ puts one back to the default.
 
-If the rider moves the fader on an input, a Grid fader latched to that input lets go each time, because that counts as an outside move. Ride the trim instead to keep both.
+Heads up: if the rider moves the fader on an input, a Grid fader latched to that input lets go each time, because that counts as an outside move. Ride the trim instead and you keep both.
 
 ### Intech Grid faders
 
 Use **Fader: from a value (Intech Grid fader), with pickup** in a trigger that runs when the Grid fader's value changes, with the fader's value as **Value**.
 
-- Fader 1 drives the first input in the list, fader 2 the second, and so on, unless an input is given.
+- Fader 1 drives the first input in the list, fader 2 the second, and so on, unless you give it an input.
 - Pickup works as in the SQ module extension: catch band and dwell, then latched until OBS is moved elsewhere (release band and time).
-- The catch and release settings belong to each connection: set them on the connection page, under **Grid fader pickup**. A main and a backup OBS connection each have their own. They also show as variables (`grid_catch_band`, `grid_dwell_ms`, `grid_release_band`, `grid_release_ms`). A value typed into an action overrides the connection's setting for that action only.
+- The catch and release settings belong to each connection: set them on the connection page, under **Grid fader pickup**. A main and a backup OBS connection each get their own. They also show as variables (`grid_catch_band`, `grid_dwell_ms`, `grid_release_band`, `grid_release_ms`). A value typed into an action overrides the connection's setting for that action only.
 - Show it on the fader's LED with the **Grid fader pickup LED** feedback.
 
 ### Presets
@@ -152,7 +152,7 @@ Use **Fader: from a value (Intech Grid fader), with pickup** in a trigger that r
 
 ### Action recorder
 
-Companion's action recorder captures changes made on the fader page, and changes made in OBS itself, as this module's actions:
+Companion's action recorder picks up changes made on the fader page, and changes made in OBS itself, as this module's actions:
 
 - fader, mute, balance, sync and trim
 - tracks
@@ -176,11 +176,11 @@ Overall:
 - `solo`
 - `notices`
 
-### Notes
+### Good to know
 
 - The input list follows OBS's input order, which isn't always the order of OBS's mixer. Reorder it in Settings → Inputs.
-- obs-websocket doesn't report gain reduction from OBS's compressor and limiter, so there are no gain-reduction meters.
-- The page uses web fonts when online and falls back to built-in fonts at a venue without internet.
+- obs-websocket doesn't report gain reduction from OBS's compressor and limiter, so there are no gain-reduction meters. Sorry about that.
+- The page uses web fonts when online and falls back to built-in fonts at a venue with no internet. So no drama when the Wi-Fi's down.
 
 ### Psst. This one's got mates. 🍹
 

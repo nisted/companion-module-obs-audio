@@ -204,22 +204,22 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 <header>
 	<div class="brand"><span class="led" id="led"></span>OBS AUDIO</div>
 	<div class="hbar">
-		<button id="bRec" class="rec" data-tip="Start recording in OBS. While recording, press to stop (it asks twice).">● REC</button>
+		<button id="bRec" class="rec" data-tip="Starts recording in OBS. While recording, press to stop (it asks twice, just to be sure).">● REC</button>
 		<span class="val" id="recTime"></span>
-		<span class="next" id="next" data-tip="The next planned recording start, and how long until it."></span>
+		<span class="next" id="next" data-tip="When the next recording is planned to start, and how long to go."></span>
 		<span class="hsep"></span>
-		<button id="bPfl" data-tip="PFL mode. ADDITIVE: pressing PFL on another channel adds it to what you hear. EXCLUSIVE: a new PFL cancels the others.">PFL ADD</button>
-		<label class="chk" data-tip="Solo latching. On: solo stays on until pressed again. Off: solo only while held down."><input type="checkbox" id="cLatch">Solo latch</label>
-		<label class="chk" data-tip="When on, dragging one strip's edge sets every strip to the same width."><input type="checkbox" id="cMatch">Match widths</label>
+		<button id="bPfl" data-tip="PFL mode. ADDITIVE: PFL another channel and it joins what you're hearing. EXCLUSIVE: a new PFL cancels the others.">PFL ADD</button>
+		<label class="chk" data-tip="Solo latching. On: solo stays on until you press it again. Off: solo only while you hold it down."><input type="checkbox" id="cLatch">Solo latch</label>
+		<label class="chk" data-tip="When on, drag one strip's edge and every strip follows to the same width."><input type="checkbox" id="cMatch">Match widths</label>
 		<span id="msg"></span>
 		<span style="flex:1"></span>
-		<button id="upd" class="on" style="display:none" data-tip="A newer OBS Audio module or OBS is available. Press for details and download links."></button>
-		<button id="bTips" data-tip="Tip of the day">TIPS</button>
-		<button id="bSettings" data-tip="Settings. Opens a floating panel you can drag aside; the strips stay usable behind it.">⚙ SETTINGS</button>
+		<button id="upd" class="on" style="display:none" data-tip="Ooh, something new: a newer OBS Audio module or OBS is out. Press for details and download links."></button>
+		<button id="bTips" data-tip="Tip of the day. Go on, learn something.">TIPS</button>
+		<button id="bSettings" data-tip="Settings. Opens a floating panel you can drag out of the way; the strips keep working behind it.">⚙ SETTINGS</button>
 	</div>
 	<span class="clock" id="clock">--:--</span>
 </header>
-<main><div id="strips"></div><div class="empty" id="empty">Waiting for OBS…</div></main>
+<main><div id="strips"></div><div class="empty" id="empty">Waiting for OBS… any second now.</div></main>
 
 <div id="settings" class="float">
 	<div class="fhead2" id="setHead"><span>SETTINGS</span><button id="setClose" data-tip="Close settings">✕</button></div>
@@ -236,7 +236,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 	<div class="sbody" id="sbody"></div>
 </div>
 <div id="notices"></div>
-<div id="tip" class="float"><div class="fhead2"><span>TIP</span><button id="tipNext" data-tip="Another tip">NEXT</button><button id="tipClose">✕</button></div><div class="tbody"><p id="tipText"></p><label class="chk"><input type="checkbox" id="tipOnOpen"> Show a tip when the page opens</label></div></div>
+<div id="tip" class="float"><div class="fhead2"><span>TIP</span><button id="tipNext" data-tip="Another one">NEXT</button><button id="tipClose">✕</button></div><div class="tbody"><p id="tipText"></p><label class="chk"><input type="checkbox" id="tipOnOpen"> Show a tip when the page opens</label></div></div>
 <div id="dlg" class="float"><div class="fhead2"><span id="dlgTitle">CONFIRM</span><button id="dlgX">✕</button></div><div class="dbody" id="dlgBody"></div></div>
 <div id="tooltip"></div>
 
@@ -268,14 +268,14 @@ async function cmd(c) {
 		const r = await fetch('/cmd' + q(), { method: 'POST', body: JSON.stringify(c), headers: { 'Content-Type': 'application/json' } })
 		if (r.status === 401) return askPin()
 		const j = await r.json()
-		if (!j.ok) flash(j.error || 'Failed')
+		if (!j.ok) flash(j.error || 'That didn\'t work')
 		else if (j.message) flash(j.message)
 		return j
-	} catch { flash('Lost the module') }
+	} catch { flash('Lost touch with the module') }
 }
 
 function askPin() {
-	const p = prompt('PIN for this page')
+	const p = prompt('This page has a PIN. What is it?')
 	if (p === null) return
 	pin = p
 	localStorage.setItem('obsaudio.pin', pin)
@@ -349,7 +349,7 @@ setInterval(() => { $('#clock').textContent = new Date().toLocaleTimeString([], 
 // ---- header ----
 function renderHeader() {
 	$('#led').classList.toggle('ok', S.connected)
-	$('#led').parentElement.dataset.tip = S.connected ? 'Connected to OBS' : (S.obsError || 'Not connected to OBS')
+	$('#led').parentElement.dataset.tip = S.connected ? 'Connected to OBS. All good.' : (S.obsError || 'Not connected to OBS')
 	const r = S.recording
 	$('#bRec').classList.toggle('on', r.active)
 	$('#bRec').textContent = r.active ? (r.paused ? '❚❚ PAUSED' : '■ STOP REC') : '● REC'
@@ -395,7 +395,7 @@ $('#dlgX').onclick = closeDialog
 function stopFlow() {
 	dialog('STOP RECORDING', `<h3>Stop recording?</h3><div class="btns"><button class="primary" id="s1">Stop</button><button id="sc">Cancel</button></div>`, (b) => {
 		$('#sc', b).onclick = closeDialog
-		$('#s1', b).onclick = () => dialog('STOP RECORDING', `<h3>Are you definitely sure?</h3><p class="help">Recording ${esc((S.recording.timecode || '').split('.')[0])} so far.</p><div class="btns"><button class="primary" id="s2">Yes, I'm definitely sure</button><button id="sc">Cancel</button></div>`, (b2) => {
+		$('#s1', b).onclick = () => dialog('STOP RECORDING', `<h3>Are you definitely sure?</h3><p class="help">You\'ve got ${esc((S.recording.timecode || '').split('.')[0])} in the can so far.</p><div class="btns"><button class="primary" id="s2">Yes, I'm definitely sure</button><button id="sc">Cancel</button></div>`, (b2) => {
 			$('#sc', b2).onclick = closeDialog
 			$('#s2', b2).onclick = async () => { await cmd({ cmd: 'recordStop' }); planFlow() }
 		})
@@ -409,12 +409,12 @@ function planFlow(title = 'RECORDING STOPPED') {
 		<div class="row"><span class="lbl">Date</span><input type="date" id="pd" value="${today}"></div>
 		<div class="row"><span class="lbl">Time</span><input type="time" id="pt"></div>
 		<label class="chk"><input type="checkbox" id="pa"> Start recording automatically at that time</label>
-		<p class="help">If it doesn't start automatically, a "Start recording?" reminder pops up ${S.store.page.recordLeadMin} minutes before.</p>
+		<p class="help">If it's not starting automatically, I'll pop up a "Start recording?" reminder ${S.store.page.recordLeadMin} minutes before.</p>
 		<div class="btns"><button class="primary" id="pset">Set</button><button id="pskip">Skip (stay stopped)</button></div>`, (b) => {
 		$('#pskip', b).onclick = () => { cmd({ cmd: 'recordPlan', nextStart: null }); closeDialog() }
 		$('#pset', b).onclick = () => {
 			const t = $('#pt', b).value
-			if (!t) return flash('Pick a time, or Skip')
+			if (!t) return flash('Pick a time first, or press Skip')
 			const when = new Date(`${$('#pd', b).value}T${t}:00`)
 			cmd({ cmd: 'recordPlan', nextStart: when.toISOString(), autoStart: $('#pa', b).checked })
 			closeDialog()
@@ -442,21 +442,21 @@ function renderNotices() {
 
 // ---- tip of the day ----
 const TIPS = [
-	'Press "This level" when an input sounds right. The rider then keeps it there, but leaves it alone while it stays inside the band.',
-	'On a Stream Deck, the auto gain button preset does three things: press = this level, double tap = calibrate to the input\'s level, press and hold = calibrate to the module level.',
-	'Drag a fader with two fingers, or switch FINE on for the strip, for small moves. Double tap a fader for 0 dB.',
-	'Knobs: drag up and down. Hold Shift for fine steps, double click to reset, click the value to type one.',
-	'PFL uses OBS\'s monitoring. Set the monitoring device in OBS: Settings → Audio → Advanced.',
-	'Solo lets you hear just one input on monitoring. When you let go, every PFL goes back to how it was. It never touches the recording.',
-	'Make an input the backup of another (Input section → Backup for). With auto switch on (Show advanced → Backup feed) it crossfades to the backup if the main drops out, and never switches back by itself.',
-	'Stopping a recording asks twice, then asks when it\'s due to restart. Set a time and a countdown appears in the top bar.',
-	'Settings float: drag them by their title bar out of the way and keep working on the strips.',
+	'Input sounding lovely? Press "This level". The rider keeps it there, and leaves it alone while it stays inside the band.',
+	'On a Stream Deck, the auto gain button preset is three buttons in one: press = this level, double tap = calibrate to the input\'s level, press and hold = calibrate to the module level.',
+	'For small moves, drag a fader with two fingers, or switch FINE on for the strip. Double tap a fader for 0 dB.',
+	'Knobs go up and down, not round and round. Hold Shift for fine steps, double click to reset, click the value to type one.',
+	'PFL uses OBS\'s monitoring, so set the monitoring device in OBS first: Settings → Audio → Advanced.',
+	'Solo lets you hear just one input on monitoring. Let go and every PFL goes back to how it was. It never touches the recording.',
+	'Got a spare mic on the presenter? Make it the backup (Input section → Backup for). With auto switch on (Show advanced → Backup feed) it crossfades to the backup if the main drops out, and never switches back by itself.',
+	'Stopping a recording asks twice (no accidents here), then asks when it\'s due to restart. Set a time and a countdown appears in the top bar.',
+	'Settings float. Drag them by the title bar out of the way and carry on with the strips.',
 	'Drag a strip\'s right edge to make it wider. Tick Match widths to size them all together.',
 	'Show advanced opens every auto gain setting over the channel settings. Pin it to keep it as its own column.',
-	'Export your settings from Settings → Export / import. On import you choose which parts to take, and the old settings are kept as an autosave.',
-	'Hover over anything for a tooltip. Tooltips can be turned off in Settings → Page.',
-	'With the rider moving the fader, a Grid fader latched to that input lets go each time. Ride the trim instead to keep both.',
-	'The PRE meter is before the fader (peaks only, as OBS gives it). POST is what\'s recorded.',
+	'Moving to another machine? Export your settings from Settings → Export / import. On import you choose which parts to take, and the old settings are kept as an autosave.',
+	'Hover over anything for a tooltip. Know it all already? Turn them off in Settings → Page.',
+	'With the rider moving the fader, a Grid fader latched to that input lets go each time. Ride the trim instead and you keep both.',
+	'The PRE meter is before the fader (peaks only, as that\'s all OBS gives). POST is what\'s recorded.',
 ]
 let tipN = LS('tipN', 0)
 function showTip() {
@@ -553,18 +553,18 @@ function buildStrip(inp, rows) {
 	const el = document.createElement('div')
 	el.className = 'strip' + (st.pinned ? ' pinned' : '')
 	el.dataset.name = inp.name
-	const meterHtml = (cls, label) => `<div class="meter ${cls}" data-tip="${cls === 'pre' ? 'PRE: incoming level before the fader (peaks)' : 'POST: level after the fader, as recorded'}"><span class="mlbl">${label}</span>${Array.from({ length: Math.max(1, Math.min(inp.channels, 8)) }, () => `<div class="ch"><div class="bar"></div><div class="pk"></div></div>`).join('')}<div class="band"></div><div class="tgt"></div></div>`
+	const meterHtml = (cls, label) => `<div class="meter ${cls}" data-tip="${cls === 'pre' ? 'PRE: what\'s coming in, before the fader (peaks)' : 'POST: the level after the fader, as recorded'}"><span class="mlbl">${label}</span>${Array.from({ length: Math.max(1, Math.min(inp.channels, 8)) }, () => `<div class="ch"><div class="bar"></div><div class="pk"></div></div>`).join('')}<div class="band"></div><div class="tgt"></div></div>`
 	el.innerHTML = `<div class="name"></div>
 		<div class="cols">
 			<div class="col fmcol">
-				<div class="tog"><button class="${pre ? 'on' : ''}" data-t="pre" data-tip="Show the pre-fader meter on this strip">PRE</button><button class="${post ? 'on' : ''}" data-t="post" data-tip="Show the post-fader meter on this strip">POST</button><button class="${st.fine ? 'on' : ''}" data-t="fine" data-tip="Fine: small fader moves on this strip (two fingers do the same)">FINE</button></div>
-				<div class="fm"><div class="meters">${pre ? meterHtml('pre', 'PRE') : ''}${post ? meterHtml('post', 'POST') : ''}</div>${pre || post ? `<div class="mscale" data-tip="Meter scale (dB)">${[0, -6, -12, -18, -24, -36, -48].filter((d) => d <= S.store.page.meterTopDb && d > S.store.page.meterFloorDb).map((d) => `<span style="bottom:${mFrac(d) * 100}%">${d}</span>`).join('')}</div>` : ''}<div class="fader" data-tip="Fader. Drag to move; double tap for 0 dB."><div class="track"></div><div class="scale"></div><div class="cap"></div></div></div>
-				<div class="readout"><span class="val vol"></span><span class="rstate"></span><span class="val lvl" data-tip="The level the rider is listening to"></span></div>
-				<div class="bottom"><button class="mute" data-a="mute" data-tip="Mute: cuts this input from the stream and the recording">MUTE</button><button class="pfl" data-a="pfl" data-tip="PFL: listen to this input on OBS's monitoring (headphones). Doesn't change the stream or recording.">PFL</button><button class="solo" data-a="solo" data-tip="Solo: hear only this input on monitoring while held (or until pressed again with Solo latch on). Never touches the recording.">SOLO</button></div>
+				<div class="tog"><button class="${pre ? 'on' : ''}" data-t="pre" data-tip="Shows the pre-fader meter on this strip">PRE</button><button class="${post ? 'on' : ''}" data-t="post" data-tip="Shows the post-fader meter on this strip">POST</button><button class="${st.fine ? 'on' : ''}" data-t="fine" data-tip="Fine: small fader moves on this strip (two fingers do the same trick)">FINE</button></div>
+				<div class="fm"><div class="meters">${pre ? meterHtml('pre', 'PRE') : ''}${post ? meterHtml('post', 'POST') : ''}</div>${pre || post ? `<div class="mscale" data-tip="Meter scale (dB)">${[0, -6, -12, -18, -24, -36, -48].filter((d) => d <= S.store.page.meterTopDb && d > S.store.page.meterFloorDb).map((d) => `<span style="bottom:${mFrac(d) * 100}%">${d}</span>`).join('')}</div>` : ''}<div class="fader" data-tip="The fader. Drag to move; double tap for 0 dB."><div class="track"></div><div class="scale"></div><div class="cap"></div></div></div>
+				<div class="readout"><span class="val vol"></span><span class="rstate"></span><span class="val lvl" data-tip="The level the rider is listening to right now"></span></div>
+				<div class="bottom"><button class="mute" data-a="mute" data-tip="Mute: cuts this input from the stream and the recording">MUTE</button><button class="pfl" data-a="pfl" data-tip="PFL: have a listen to this input on OBS's monitoring (headphones). The stream and recording don't change.">PFL</button><button class="solo" data-a="solo" data-tip="Solo: hear only this input on monitoring while held (or until pressed again with Solo latch on). Never touches the recording.">SOLO</button></div>
 			</div>
 			<div class="col setcol"><div class="basic"></div><div class="sections"></div><div class="adv"></div></div>
 			<div class="col advcol"><div class="adv"></div></div>
-		</div><div class="grip" data-tip="Drag to change this strip's width"></div>`
+		</div><div class="grip" data-tip="Drag to make this strip wider or narrower"></div>`
 	for (const bar of $$('.bar', el)) bar.style.background = zoneGradient(rows)
 	const scale = $('.scale', el)
 	for (const db of [10, 5, 0, -5, -10, -20, -30, -40, -60]) {
@@ -677,19 +677,19 @@ function setCap(el, pos, rows) {
 // basic auto gain, at the top of the channel settings
 function basicHtml(inp) {
 	const on = inp.settings.riderOn
-	return `<div class="btns"><button class="${on ? 'on' : ''}" data-a="rider" data-tip="Rider on/off: keeps this input near its target by moving the ${inp.settings.controlMode === 'trim' ? 'trim' : 'fader'} for you">RIDER ${on ? 'ON' : 'OFF'}</button><button data-a="capture" data-tip="This level please: take the level now as the target">THIS LEVEL</button><button data-a="cal" data-l="input" data-tip="Calibrate this input once, to its own level (${fmt(inp.settings.calibrateDb, 1)} dB)">CAL ${fmt(inp.settings.calibrateDb, 0)}</button><button data-a="cal" data-l="module" data-tip="Calibrate once, to the module level (${fmt(S.store.moduleCalibrateDb, 1)} dB)">CAL ${fmt(S.store.moduleCalibrateDb, 0)}</button></div>
-		<div class="stat"><span class="lbl">Target</span><span class="val" data-live="target" data-tip="The level the rider holds. Click to type one." style="cursor:text">${inp.target === null ? 'none' : fmt(inp.target) + ' dB'}</span></div>
+	return `<div class="btns"><button class="${on ? 'on' : ''}" data-a="rider" data-tip="Rider on/off: keeps this input near its target by moving the ${inp.settings.controlMode === 'trim' ? 'trim' : 'fader'} for you, so you don\'t have to">RIDER ${on ? 'ON' : 'OFF'}</button><button data-a="capture" data-tip="This level please: sounds right? This grabs the level now as the target">THIS LEVEL</button><button data-a="cal" data-l="input" data-tip="Calibrate this input once, to its own level (${fmt(inp.settings.calibrateDb, 1)} dB)">CAL ${fmt(inp.settings.calibrateDb, 0)}</button><button data-a="cal" data-l="module" data-tip="Calibrate once, to the module level (${fmt(S.store.moduleCalibrateDb, 1)} dB)">CAL ${fmt(S.store.moduleCalibrateDb, 0)}</button></div>
+		<div class="stat"><span class="lbl">Target</span><span class="val" data-live="target" data-tip="The level the rider holds. Click to type your own." style="cursor:text">${inp.target === null ? 'none' : fmt(inp.target) + ' dB'}</span></div>
 		<div class="stat" data-tip="${esc(META.inputFields.bandDb.help)}"><span class="lbl">Leave alone within ±</span><span style="white-space:nowrap"><input type="number" data-a="band" value="${inp.settings.bandDb}" min="0" max="30" step="0.5" style="width:56px"> dB</span></div>
 		<div class="stat"><span class="lbl">Status</span><span class="val" data-live="state">${inp.rider}</span></div>
-		<button data-a="adv" data-tip="Show every auto gain and backup setting for this input">SHOW ADVANCED ▸</button>`
+		<button data-a="adv" data-tip="Shows every auto gain and backup setting for this input. All the knobs.">SHOW ADVANCED ▸</button>`
 }
 
 function control(inp, c) {
 	switch (c) {
 		case 'mute': return `<div class="btns"><button class="mute ${inp.muted ? 'on' : ''}" data-a="mute2" data-tip="Mute: cuts this input from the stream and recording">${inp.muted ? 'MUTED' : 'MUTE'}</button></div>`
-		case 'monitor': return `<div class="row"><span class="lbl" data-tip="OBS monitoring for this input">Monitor</span><select data-a="monitor">${[['none', 'Off'], ['monitor', 'Monitor only'], ['both', 'Monitor + output']].map(([v, l]) => `<option value="${v}" ${inp.monitor === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`
+		case 'monitor': return `<div class="row"><span class="lbl" data-tip="What OBS monitoring does with this input">Monitor</span><select data-a="monitor">${[['none', 'Off'], ['monitor', 'Monitor only'], ['both', 'Monitor + output']].map(([v, l]) => `<option value="${v}" ${inp.monitor === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`
 		case 'balance': return `<div class="knobs">${knob({ label: 'Balance', value: Math.round((inp.balance - 0.5) * 200), min: -100, max: 100, step: 1, def: 0, key: 'balance', tip: 'Balance: -100 = left, 0 = centre, 100 = right. Double click to centre.' })}</div>`
-		case 'sync': return `<div class="row"><span class="lbl" data-tip="Delays this input to line up with video">Sync offset (ms)</span><input type="number" data-a="sync" value="${inp.syncMs}" min="-950" max="20000" step="1"></div>`
+		case 'sync': return `<div class="row"><span class="lbl" data-tip="Delays this input so it lines up with the video">Sync offset (ms)</span><input type="number" data-a="sync" value="${inp.syncMs}" min="-950" max="20000" step="1"></div>`
 		case 'trim': return `<div class="knobs">${knob({ label: 'Trim' + (inp.hasTrim ? '' : ' (adds)'), value: inp.trimDb, min: -30, max: 30, step: 0.1, def: 0, unit: 'dB', key: 'trim', tip: 'Trim: a Gain filter before the fader, added to the input when first used. Double click for 0 dB.' })}</div>`
 		case 'tracks': return `<div class="tracks">${[1, 2, 3, 4, 5, 6].map((t) => `<button class="${inp.tracks[t] ? 'on' : ''}" data-a="track" data-t="${t}" data-tip="Send this input to OBS recording track ${t}">${t}</button>`).join('')}</div>`
 		case 'backup': {
@@ -714,7 +714,7 @@ function filterBox(f, kind) {
 		if (p.type === 'choice') return `<div class="row"><span class="lbl">${esc(p.label)}</span><select data-a="fset" data-f="${fn}" data-key="${p.key}">${p.choices.map((c) => `<option value="${esc(c.id)}" ${String(v) === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select></div>`
 		return `<div class="row"><span class="lbl">${esc(p.label)}</span><input type="text" data-a="fset" data-f="${fn}" data-key="${p.key}" value="${esc(v)}"></div>`
 	}).join('')
-	return `<div class="filter ${f.enabled ? '' : 'off'}"><div class="fhead"><span data-tip="${fn}">${fn}</span><button class="small ${f.enabled ? 'on' : ''}" data-a="fon" data-f="${fn}" data-tip="Switch this filter on or off">${f.enabled ? 'ON' : 'OFF'}</button><button class="small" data-a="fdel" data-f="${fn}" data-tip="Remove this filter from the input">✕</button></div>${others}<div class="knobs">${knobs}</div></div>`
+	return `<div class="filter ${f.enabled ? '' : 'off'}"><div class="fhead"><span data-tip="${fn}">${fn}</span><button class="small ${f.enabled ? 'on' : ''}" data-a="fon" data-f="${fn}" data-tip="Switches this filter on or off">${f.enabled ? 'ON' : 'OFF'}</button><button class="small" data-a="fdel" data-f="${fn}" data-tip="Removes this filter from the input">✕</button></div>${others}<div class="knobs">${knobs}</div></div>`
 }
 
 function fieldInput(key, field, value, attrs) {
@@ -729,9 +729,9 @@ const GROUPS = [['rider', 'Rider'], ['capture', 'This level please'], ['limits',
 function advancedHtml(inp) {
 	const body = GROUPS.map(([g, title]) => `<h4>${title}</h4>` + Object.entries(META.inputFields).filter(([, f]) => f.group === g).map(([k, f]) => {
 		const ovr = k in inp.overrides
-		return `<div class="row" data-tip="${esc(f.help || '')}"><span class="lbl ${ovr ? 'ovr' : ''}">${esc(f.label)}${f.unit ? ' (' + esc(f.unit) + ')' : ''}</span>${ovr ? `<button class="reset" data-a="sreset" data-key="${k}" data-tip="Changed for this input. Press to go back to the default.">↺</button>` : ''}${fieldInput(k, f, inp.settings[k], `data-a="sset" data-key="${k}"`)}</div>`
+		return `<div class="row" data-tip="${esc(f.help || '')}"><span class="lbl ${ovr ? 'ovr' : ''}">${esc(f.label)}${f.unit ? ' (' + esc(f.unit) + ')' : ''}</span>${ovr ? `<button class="reset" data-a="sreset" data-key="${k}" data-tip="Changed for this input. Press to put it back to the default.">↺</button>` : ''}${fieldInput(k, f, inp.settings[k], `data-a="sset" data-key="${k}"`)}</div>`
 	}).join('')).join('')
-	return `<div class="ahead"><b>AUTO GAIN · ${esc(inp.name)}</b><button class="small" data-a="pin" data-tip="Pin: keep these settings as their own column instead of over the channel settings">${ps(inp.name).pinned ? 'UNPIN' : 'PIN'}</button><button class="small" data-a="advclose" data-tip="Close">✕</button></div><div class="abody">${body}<p class="help">Purple = changed for this input; ↺ goes back to the default (Settings → Auto gain defaults).</p></div>`
+	return `<div class="ahead"><b>AUTO GAIN · ${esc(inp.name)}</b><button class="small" data-a="pin" data-tip="Pin: keeps these settings in their own column instead of over the channel settings">${ps(inp.name).pinned ? 'UNPIN' : 'PIN'}</button><button class="small" data-a="advclose" data-tip="Close">✕</button></div><div class="abody">${body}<p class="help">Purple means changed for this input; ↺ puts it back to the default (Settings → Auto gain defaults).</p></div>`
 }
 
 function wire(el, name) {
@@ -748,7 +748,7 @@ function wire(el, name) {
 	on('[data-live=target]', 'click', () => { const t = prompt('Target level (dB), blank to clear', inp().target ?? ''); if (t !== null) cmd({ cmd: 'setTarget', input: name, value: t }) })
 	on('[data-a=bswitch]', 'click', () => cmd({ cmd: 'backupSwitch', input: name, to: inp().onBackup ? 'main' : 'backup' }))
 	on('[data-a=fadd]', 'change', (x) => { if (x.value) cmd({ cmd: 'filterAdd', input: name, kind: x.value }); x.value = '' })
-	on('[data-a=fdel]', 'click', (x) => { if (confirm(`Remove ${x.dataset.f}?`)) cmd({ cmd: 'filterRemove', input: name, filter: x.dataset.f }) })
+	on('[data-a=fdel]', 'click', (x) => { if (confirm(`Remove ${x.dataset.f} from this input?`)) cmd({ cmd: 'filterRemove', input: name, filter: x.dataset.f }) })
 	on('[data-a=fon]', 'click', (x) => cmd({ cmd: 'filterEnable', input: name, filter: x.dataset.f, value: !x.classList.contains('on') }))
 	on('[data-a=fset]', 'change', (x) => cmd({ cmd: 'filterSet', input: name, filter: x.dataset.f, key: x.dataset.key, value: x.value }))
 	on('[data-a=sset]', 'change', (x) => cmd({ cmd: 'inputSetting', input: name, key: x.dataset.key, value: x.value }))
@@ -885,27 +885,27 @@ $$('[data-tab]').forEach((b) => b.addEventListener('click', () => openSettings(b
 let sectionsDraft = null
 let importFile = null
 const PAGE_FIELDS = [
-	['layout', 'Layout', 'choice', [['strips', 'Desk strips'], ['rows', 'Horizontal rows']], 'Desk strips side by side, or one row per input (suits a narrow OBS dock).'],
-	['tooltips', 'Tooltips', 'bool', null, 'Show these explanations when hovering over things.'],
-	['tipsOnOpen', 'Tip of the day when the page opens', 'bool', null, 'Show a tip each time the page is opened.'],
+	['layout', 'Layout', 'choice', [['strips', 'Desk strips'], ['rows', 'Horizontal rows']], 'Desk strips side by side, or one row per input (handy in a narrow OBS dock).'],
+	['tooltips', 'Tooltips', 'bool', null, 'Shows little explanations like this one when you hover over things.'],
+	['tipsOnOpen', 'Tip of the day when the page opens', 'bool', null, 'Shows a tip each time the page opens.'],
 	['pflMode', 'PFL mode', 'choice', [['additive', 'Additive'], ['exclusive', 'Exclusive']], 'Additive: PFLs add up. Exclusive: a new PFL cancels the others.'],
-	['soloLatch', 'Solo latches', 'bool', null, 'On: solo stays on until pressed again. Off: solo only while held.'],
-	['law', 'Fader law', 'choice', [['desk', 'Desk'], ['linear', 'Linear dB']], 'Desk: unity three quarters up, like a console. Linear: even dB spacing.'],
+	['soloLatch', 'Solo latches', 'bool', null, 'On: solo stays on until you press it again. Off: solo only while held.'],
+	['law', 'Fader law', 'choice', [['desk', 'Desk'], ['linear', 'Linear dB']], 'Desk: unity three quarters of the way up, like a proper console. Linear: even dB spacing.'],
 	['faderTopDb', 'Fader top (dB)', 'number', null, 'The level at the top of the fader travel.'],
-	['faderBottomDb', 'Fader bottom, linear law (dB)', 'number', null, 'The lowest level above -∞ with the linear law.'],
+	['faderBottomDb', 'Fader bottom, linear law (dB)', 'number', null, 'With the linear law, the lowest level above -∞.'],
 	['meterFloorDb', 'Meter floor (dB)', 'number', null, 'The bottom of the meters.'],
 	['meterTopDb', 'Meter top (dB)', 'number', null, 'The top of the meters.'],
 	['showPre', 'Pre-fader meters on for new strips', 'bool', null, 'Each strip has its own PRE button too.'],
 	['showPost', 'Post-fader meters on for new strips', 'bool', null, 'Each strip has its own POST button too.'],
 	['peakHoldMs', 'Peak hold (ms)', 'number', null, 'How long the peak marker holds before falling.'],
 	['peakFallDbPerS', 'Peak fall (dB/s)', 'number', null, 'How fast the peak marker falls after the hold.'],
-	['greenToDb', 'Green up to (dB)', 'number', null, 'Meter colour zones.'],
+	['greenToDb', 'Green up to (dB)', 'number', null, 'Where the meter stops being green.'],
 	['yellowToDb', 'Yellow up to (dB)', 'number', null, 'Above this the meter is red.'],
 	['greenColour', 'Green colour', 'color', null, ''], ['yellowColour', 'Yellow colour', 'color', null, ''], ['redColour', 'Red colour', 'color', null, ''],
 	['bandColour', 'Rider band colour', 'color', null, 'The shaded band either side of the target on the meter.'],
 	['ridingColour', 'Band colour while riding', 'color', null, ''],
 	['targetColour', 'Target line colour', 'color', null, ''],
-	['meterRateHz', 'Meter updates per second', 'number', null, 'Up to 30. Lower is lighter on slow devices.'],
+	['meterRateHz', 'Meter updates per second', 'number', null, 'Up to 30. Lower is kinder to slow devices.'],
 	['fineRatio', 'Fine mode ratio', 'number', null, 'How much smaller fader moves are in fine mode (0.2 = a fifth).'],
 	['doubleTapUnity', 'Double-tap a fader for 0 dB', 'bool', null, ''],
 ]
@@ -916,7 +916,7 @@ function renderSettings(force) {
 	if (!force && (tab === 'sections' || tab === 'io' || tab === 'recording')) return
 	const st = S.store
 	if (tab === 'page') {
-		body.innerHTML = `<p class="help">Saved in the module, so every browser sees them. They can also be set from Companion ("Fader page: change a setting").</p><div class="grid2">${PAGE_FIELDS.map(([k, l, t, ch, tip]) => {
+		body.innerHTML = `<p class="help">These live in the module, so every browser sees the same thing. You can set them from Companion too ("Fader page: change a setting").</p><div class="grid2">${PAGE_FIELDS.map(([k, l, t, ch, tip]) => {
 			const v = st.page[k]
 			let ctl
 			if (t === 'choice') ctl = `<select data-p="${k}">${ch.map(([id, lab]) => `<option value="${id}" ${v === id ? 'selected' : ''}>${lab}</option>`).join('')}</select>`
@@ -927,19 +927,19 @@ function renderSettings(force) {
 		}).join('')}</div>`
 		$$('[data-p]', body).forEach((x) => x.addEventListener('change', () => cmd({ cmd: 'page', key: x.dataset.p, value: x.value })))
 	} else if (tab === 'defaults') {
-		body.innerHTML = `<p class="help">Every input starts from these. An input's own changes (purple in its advanced settings) override them.</p>` + GROUPS.map(([g, title]) => `<div class="card"><h4>${title}</h4><div class="grid2">${Object.entries(META.inputFields).filter(([, f]) => f.group === g && f.type !== 'input').map(([k, f]) => `<div class="row" data-tip="${esc(f.help || '')}"><span class="lbl">${esc(f.label)}${f.unit ? ' (' + esc(f.unit) + ')' : ''}</span>${fieldInput(k, f, st.defaults[k], `data-d="${k}"`)}</div>`).join('')}</div></div>`).join('')
+		body.innerHTML = `<p class="help">Every input starts from these. Anything changed on an input itself (purple in its advanced settings) wins.</p>` + GROUPS.map(([g, title]) => `<div class="card"><h4>${title}</h4><div class="grid2">${Object.entries(META.inputFields).filter(([, f]) => f.group === g && f.type !== 'input').map(([k, f]) => `<div class="row" data-tip="${esc(f.help || '')}"><span class="lbl">${esc(f.label)}${f.unit ? ' (' + esc(f.unit) + ')' : ''}</span>${fieldInput(k, f, st.defaults[k], `data-d="${k}"`)}</div>`).join('')}</div></div>`).join('')
 		$$('[data-d]', body).forEach((x) => x.addEventListener('change', () => cmd({ cmd: 'defaultSetting', key: x.dataset.d, value: x.value })))
 	} else if (tab === 'buttons') {
 		body.innerHTML = `<p class="help">The auto gain button on each input (Companion preset): <b>press</b> = this level please, <b>double tap</b> = calibrate to the input's own level, <b>press and hold</b> = calibrate to the module level below.</p>
-			<div class="grid2"><div class="row" data-tip="How quickly the second tap must follow for a double tap"><span class="lbl">Double-tap window (ms)</span><input type="number" data-g="doubleTapMs" value="${st.gestures.doubleTapMs}"></div>
-			<div class="row" data-tip="How long to hold for press-and-hold"><span class="lbl">Hold time (ms)</span><input type="number" data-g="holdMs" value="${st.gestures.holdMs}"></div>
+			<div class="grid2"><div class="row" data-tip="How quickly the second tap has to follow to count as a double tap"><span class="lbl">Double-tap window (ms)</span><input type="number" data-g="doubleTapMs" value="${st.gestures.doubleTapMs}"></div>
+			<div class="row" data-tip="How long you hold for it to count as press-and-hold"><span class="lbl">Hold time (ms)</span><input type="number" data-g="holdMs" value="${st.gestures.holdMs}"></div>
 			<div class="row" data-tip="The level press-and-hold calibrates to"><span class="lbl">Module calibrate level (dB)</span><input type="number" step="0.5" data-g="moduleCalibrateDb" value="${st.moduleCalibrateDb}"></div></div>`
 		$$('[data-g]', body).forEach((x) => x.addEventListener('change', () => cmd({ cmd: 'gestures', [x.dataset.g]: x.value })))
 	} else if (tab === 'sections') {
 		sectionsDraft = JSON.parse(JSON.stringify(st.sections))
 		drawSections()
 	} else if (tab === 'inputs') {
-		body.innerHTML = `<p class="help">Order, hide, and each input's own section choices (blank = the section's default).</p>` + S.inputs.map((inp, i) => `<div class="card"><div class="row"><b style="flex:1">${esc(inp.name)}</b>
+		body.innerHTML = `<p class="help">Put inputs in order, hide the ones you don't need, and pick each input's own section choices (blank = the section's default).</p>` + S.inputs.map((inp, i) => `<div class="card"><div class="row"><b style="flex:1">${esc(inp.name)}</b>
 			<button class="small" data-up="${i}" data-tip="Move left">▲</button><button class="small" data-down="${i}" data-tip="Move right">▼</button>
 			<label class="chk"><input type="checkbox" data-hide="${esc(inp.name)}" ${inp.hidden ? 'checked' : ''}> Hidden</label></div>
 			<div class="grid2">${st.sections.map((sec) => `<div class="row"><span class="lbl">${esc(sec.name)}</span><select data-isec="${esc(sec.id)}" data-in="${esc(inp.name)}"><option value="">Default (${sec.mode})</option>${['hidden', 'open', 'collapsible'].map((m) => `<option value="${m}" ${inp.sections[sec.id] === m ? 'selected' : ''}>${m}</option>`).join('')}</select></div>`).join('')}</div></div>`).join('')
@@ -965,11 +965,11 @@ function renderSettings(force) {
 		const row = (label, now, latest, update, link, linkText) => `<div class="card"><h4>${label}</h4>
 			<div class="row"><span class="lbl">This version</span><span class="val">${esc(now || 'unknown')}</span></div>
 			<div class="row"><span class="lbl">Latest</span><span class="val">${esc(latest || 'not known yet')}</span></div>
-			<p class="help">${update ? '<b>A newer version is out.</b>' : latest ? 'Up to date.' : ''}</p>
+			<p class="help">${update ? '<b>A newer version is out.</b>' : latest ? 'Up to date. Nice and fresh.' : ''}</p>
 			<div class="btns"><button class="${update ? 'primary' : ''}" data-open="${esc(link)}">${linkText}</button></div></div>`
 		body.innerHTML = row('OBS Audio module', V.moduleVersion, V.moduleLatest, V.moduleUpdate, V.moduleDownload, 'Download the latest module') +
 			row('OBS Studio', V.obsVersion, V.obsLatest, V.obsUpdate, V.obsDownload, 'Download the latest OBS') +
-			`<p class="help">${V.checkedAt ? 'Last checked ' + new Date(V.checkedAt).toLocaleString() + '.' : 'Not checked yet.'} ${V.error ? esc(V.error) : ''} How often it checks is in the Companion connection's settings. Install a module in Companion with Modules → Import module package.</p>`
+			`<p class="help">${V.checkedAt ? 'Last checked ' + new Date(V.checkedAt).toLocaleString() + '.' : 'Not checked yet.'} ${V.error ? esc(V.error) : ''} You can change how often I check in the Companion connection's settings. To install a module in Companion: Modules → Import module package.</p>`
 		$$('[data-open]', body).forEach((b) => b.onclick = () => window.open(b.dataset.open, '_blank', 'noopener'))
 	}
 }
@@ -980,15 +980,15 @@ function drawRecording() {
 	body.innerHTML = `<div class="card"><h4>Recording now</h4>
 		<div class="row"><span class="lbl">State</span><span class="val">${r.active ? (r.paused ? 'paused' : 'recording') : 'stopped'}</span></div>
 		<div class="row"><span class="lbl">Last file</span><span class="val">${esc(r.lastFile || 'none yet')}</span></div>
-		<div class="row" data-tip="Counted only when OBS runs on this computer (or its folder can be read from here)"><span class="lbl">Files in the folder</span><span class="val">${r.fileCount ?? 'can\'t see the folder from here'}</span></div>
+		<div class="row" data-tip="Only counted when OBS runs on this computer (or its folder can be read from here)"><span class="lbl">Files in the folder</span><span class="val">${r.fileCount ?? 'can\'t see the folder from here, sorry'}</span></div>
 		<div class="btns"><button id="rPause" ${r.active ? '' : 'disabled'}>${r.paused ? 'RESUME' : 'PAUSE'}</button><button id="rPlan">Plan the next start</button>${r.plan.nextStart ? '<button id="rClear">Clear the plan</button>' : ''}</div></div>
 		<div class="card"><h4>Where and what it's called</h4>
-		<div class="row" data-tip="OBS's recording folder, on the computer OBS runs on"><span class="lbl">Folder</span><input type="text" id="rDir" value="${esc(r.directory)}" style="width:60%"></div>
+		<div class="row" data-tip="Where OBS saves recordings, on the computer OBS runs on"><span class="lbl">Folder</span><input type="text" id="rDir" value="${esc(r.directory)}" style="width:60%"></div>
 		<div class="row" data-tip="OBS's file name format. Put a prefix before OBS's date codes, e.g. Conference %CCYY-%MM-%DD %hh-%mm-%ss"><span class="lbl">File name format</span><input type="text" id="rFmt" value="${esc(r.filenameFormat)}" style="width:60%"></div>
 		<div class="btns"><button class="primary" id="rSave">Save to OBS</button></div></div>
 		<div class="card"><h4>Reminder</h4>
-		<div class="row" data-tip="When a start isn't automatic, how many minutes before it the 'Start recording?' reminder appears"><span class="lbl">Remind this many minutes before</span><input type="number" data-p="recordLeadMin" value="${p.recordLeadMin}"></div>
-		<div class="row" data-tip="How long Snooze hides the reminder"><span class="lbl">Snooze for (minutes)</span><input type="number" data-p="recordSnoozeMin" value="${p.recordSnoozeMin}"></div></div>`
+		<div class="row" data-tip="When a start isn't automatic, how many minutes before it the 'Start recording?' reminder pops up"><span class="lbl">Remind this many minutes before</span><input type="number" data-p="recordLeadMin" value="${p.recordLeadMin}"></div>
+		<div class="row" data-tip="How long Snooze keeps the reminder quiet"><span class="lbl">Snooze for (minutes)</span><input type="number" data-p="recordSnoozeMin" value="${p.recordSnoozeMin}"></div></div>`
 	$('#rPause', body).onclick = () => cmd({ cmd: 'recordPause', value: !r.paused })
 	$('#rPlan', body).onclick = () => planFlow('PLAN THE NEXT START')
 	if ($('#rClear', body)) $('#rClear', body).onclick = () => cmd({ cmd: 'recordPlan', nextStart: null })
@@ -998,7 +998,7 @@ function drawRecording() {
 
 function drawSections() {
 	const body = $('#sbody')
-	body.innerHTML = `<p class="help">Sections run top to bottom in each strip's settings column, under the basic auto gain controls. Tick what goes in each. Save when done.</p>` +
+	body.innerHTML = `<p class="help">Sections stack top to bottom in each strip's settings column, under the basic auto gain controls. Tick what goes in each, then Save when you're happy.</p>` +
 		sectionsDraft.map((sec, i) => `<div class="card"><div class="row"><input type="text" data-sn="${i}" value="${esc(sec.name)}" style="flex:1;width:auto">
 		<select data-sm="${i}" data-tip="Hidden, always open, or open and close with a tap">${['hidden', 'open', 'collapsible'].map((m) => `<option value="${m}" ${sec.mode === m ? 'selected' : ''}>${m === 'open' ? 'Always open' : m === 'hidden' ? 'Hidden' : 'Collapsible'}</option>`).join('')}</select>
 		<button class="small" data-su="${i}">▲</button><button class="small" data-sd="${i}">▼</button><button class="small" data-sx="${i}" data-tip="Delete this section">✕</button></div>
@@ -1026,16 +1026,16 @@ function drawIO() {
 		const list = [['page', 'Page and meter settings'], ['sections', 'Sections'], ['defaults', 'Auto gain defaults'], ['gestures', 'Button timings and module calibrate level'], ['order', 'Input order and hidden inputs']]
 		for (const n of Object.keys(st.inputs || {})) list.push(['input:' + n, 'Input: ' + n])
 		parts = `<div class="card"><h4>Import ${esc(importFile.exported ? 'from ' + importFile.exported.slice(0, 16).replace('T', ' ') : '')}</h4><div class="checks">${list.map(([id, l]) => `<label><input type="checkbox" data-part="${esc(id)}" checked>${esc(l)}</label>`).join('')}</div>
-			<p class="help">The settings in use now are saved to the autosave first, so this can be rolled back.</p><div class="btns"><button id="iGo" class="primary">Import ticked parts</button><button id="iCancel">Cancel</button></div></div>`
+			<p class="help">The settings in use now go into the autosave first, so you can roll this back if you change your mind.</p><div class="btns"><button id="iGo" class="primary">Import ticked parts</button><button id="iCancel">Cancel</button></div></div>`
 	}
-	body.innerHTML = `<div class="card"><h4>Export</h4><p class="help">All of this module's settings: page, sections, auto gain defaults, buttons, input order, and every input's settings and targets. (Not the OBS address or password: those are in the Companion connection.)</p><div class="btns"><button id="eGo" class="primary">Download settings file</button></div></div>
+	body.innerHTML = `<div class="card"><h4>Export</h4><p class="help">Everything this module remembers: page, sections, auto gain defaults, buttons, input order, and every input's settings and targets. (Not the OBS address or password, mind: those live in the Companion connection.)</p><div class="btns"><button id="eGo" class="primary">Download settings file</button></div></div>
 		<div class="card"><h4>Import</h4><input type="file" id="iFile" accept=".json,application/json"></div>${parts}
-		<div class="card"><h4>Autosave</h4><p class="help">${S.autosave ? 'Taken before the last import.' : 'None yet: one is taken before every import.'}</p><div class="btns"><button id="iRestore" ${S.autosave ? '' : 'disabled'}>Roll back to the autosave</button></div></div>`
+		<div class="card"><h4>Autosave</h4><p class="help">${S.autosave ? 'Taken just before the last import.' : 'None yet. One gets taken before every import.'}</p><div class="btns"><button id="iRestore" ${S.autosave ? '' : 'disabled'}>Roll back to the autosave</button></div></div>`
 	$('#eGo').onclick = () => { const a = document.createElement('a'); a.href = '/export' + q(); a.download = ''; a.click() }
 	$('#iFile').onchange = async (e) => {
 		const file = e.target.files[0]
 		if (!file) return
-		try { const text = await file.text(); importFile = JSON.parse(text); importFile._text = text } catch { flash("That isn't a settings file"); importFile = null }
+		try { const text = await file.text(); importFile = JSON.parse(text); importFile._text = text } catch { flash("Hmm, that isn't a settings file"); importFile = null }
 		drawIO()
 	}
 	if ($('#iGo')) {

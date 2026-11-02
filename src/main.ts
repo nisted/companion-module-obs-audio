@@ -252,9 +252,9 @@ class ObsAudioInstance extends InstanceBase<Config> {
 
 	override getConfigFields(): SomeCompanionConfigField[] {
 		const urls = this.#pageUrls()
-		const obsState = this.engine?.connected ? 'Connected to OBS.' : `Not connected to OBS. ${this.engine?.obs?.lastError || ''}`
+		const obsState = this.engine?.connected ? 'Connected to OBS. All good.' : `Not connected to OBS. ${this.engine?.obs?.lastError || ''}`
 		const nets = localAddresses()
-		const VAR = ' Can be a variable, e.g. $(custom:obs_host).'
+		const VAR = ' A variable works here too, e.g. $(custom:obs_host).'
 		return [
 			{
 				type: 'static-text',
@@ -263,8 +263,8 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				width: 12,
 				value:
 					`${obsState}<br>` +
-					(urls.length ? `Fader page: ${urls.map((u) => `<a href="${u}" target="_blank">${u}</a>`).join(' · ')} (also usable as an OBS custom browser dock: Docks → Custom Browser Docks).` : 'Fader page: off.') +
-					'<br>OBS setup: Tools → WebSocket Server Settings. Tick <b>Enable WebSocket server</b> (it is off by default). OBS also turns on a password: copy it from <b>Show Connect Info</b> into the password below, or untick <b>Enable Authentication</b> and leave the password blank.',
+					(urls.length ? `Fader page: ${urls.map((u) => `<a href="${u}" target="_blank">${u}</a>`).join(' · ')} (works as an OBS custom browser dock too: Docks → Custom Browser Docks).` : 'Fader page: off for now.') +
+					'<br>Setting up OBS: go to Tools → WebSocket Server Settings and tick <b>Enable WebSocket server</b> (it starts off). OBS also switches on a password: copy it from <b>Show Connect Info</b> into the password below, or untick <b>Enable Authentication</b> and leave the password blank.',
 			},
 			{
 				type: 'textinput',
@@ -272,7 +272,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'OBS address',
 				width: 6,
 				default: '127.0.0.1',
-				tooltip: 'The computer OBS runs on. 127.0.0.1 = this computer. Otherwise its IP address, e.g. 192.168.1.20.' + VAR,
+				tooltip: 'Where OBS lives. 127.0.0.1 if it\'s on this computer, otherwise its IP address, e.g. 192.168.1.20.' + VAR,
 			},
 			{
 				type: 'textinput',
@@ -280,7 +280,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'OBS WebSocket port (default 4455)',
 				width: 3,
 				default: '4455',
-				tooltip: "OBS's WebSocket port, shown in OBS: Tools → WebSocket Server Settings → Server Port. 4455 unless it was changed." + VAR,
+				tooltip: "OBS's WebSocket port. You'll find it in OBS: Tools → WebSocket Server Settings → Server Port. It's 4455 unless someone's changed it." + VAR,
 			},
 			{
 				type: 'textinput',
@@ -289,7 +289,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				width: 6,
 				default: '',
 				tooltip:
-					"OBS makes up a password and has authentication on by default. Copy it from OBS: Tools → WebSocket Server Settings → Show Connect Info. Or untick Enable Authentication there and leave this blank (then anything on the network can control OBS)." + VAR,
+					"OBS makes up its own password and has authentication on out of the box. Copy it from OBS: Tools → WebSocket Server Settings → Show Connect Info. Or untick Enable Authentication there and leave this blank (but then anything on the network can drive OBS)." + VAR,
 			},
 			{
 				type: 'textinput',
@@ -297,7 +297,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'Fader page port (default 8890, 0 = off)',
 				width: 3,
 				default: '8890',
-				tooltip: 'The port the fader and meter page is served on. Open http://<this computer>:<port>/ in any browser on the network. 0 turns the page off.' + VAR,
+				tooltip: 'The port the fader and meter page lives on. Open http://<this computer>:<port>/ in any browser on the network. 0 switches the page off.' + VAR,
 			},
 			{
 				type: 'dropdown',
@@ -307,7 +307,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				default: 'all',
 				allowCustom: true,
 				tooltip:
-					"Which of this computer's network connections the page can be opened through, like Companion's own \"network interface\" setting. All = any of them. This computer only = just a browser on this computer. Or pick one connection. This is not a list of who may use the page: use the PIN for that. You can also type an address or a variable.",
+					"Which of this computer's network connections the page answers on, like Companion's own \"network interface\" setting. All = any of them. This computer only = just a browser on this computer. Or pick one connection. It doesn't decide who's allowed in, mind: that's what the PIN is for. You can also type an address or a variable.",
 				choices: [
 					{ id: 'all', label: 'All network connections' },
 					{ id: 'local', label: 'This computer only (127.0.0.1)' },
@@ -320,7 +320,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'Fader page PIN (blank = none)',
 				width: 3,
 				default: '',
-				tooltip: 'If set, the page asks for this PIN before showing anything or allowing changes.' + VAR,
+				tooltip: 'Set one and the page asks for it before showing anything or letting anyone change things.' + VAR,
 			},
 			{
 				type: 'textinput',
@@ -328,7 +328,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'Meter variables: updates per second (default 5)',
 				width: 3,
 				default: '5',
-				tooltip: 'How often the meter level variables update (1 to 20). Higher is smoother on buttons but busier.' + VAR,
+				tooltip: 'How often the meter level variables update (1 to 20). Higher looks smoother on buttons, but keeps everything busier.' + VAR,
 			},
 			{
 				type: 'textinput',
@@ -336,14 +336,14 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: 'Check for module and OBS updates every (hours, default 12, 0 = never)',
 				width: 6,
 				default: '12',
-				tooltip: 'How often to check GitHub for a newer OBS Audio module and OBS. Needs internet access. 0 = never.' + VAR,
+				tooltip: 'How often I peek at GitHub for a newer OBS Audio module and OBS. Needs internet. 0 = never.' + VAR,
 			},
 			{
 				type: 'static-text',
 				id: 'gridInfo',
 				label: 'Grid fader pickup (this connection)',
 				width: 12,
-				value: "Used by 'Fader: from a value (Intech Grid fader), with pickup' wherever its own pickup fields are left blank. Each OBS Audio connection (e.g. main and backup OBS) has its own.",
+				value: "These are what 'Fader: from a value (Intech Grid fader), with pickup' uses whenever its own pickup fields are left blank. Each OBS Audio connection (e.g. main and backup OBS) gets its own set.",
 			},
 			{
 				type: 'textinput',
@@ -351,7 +351,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: `Catch band (± fader steps of 127, default ${DEFAULT_BAND})`,
 				width: 3,
 				default: String(DEFAULT_BAND),
-				tooltip: "How close the Grid fader must come to OBS's level before it takes over." + VAR,
+				tooltip: "How close the Grid fader has to get to OBS's level before it takes over." + VAR,
 			},
 			{
 				type: 'textinput',
@@ -359,7 +359,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: `Dwell time (ms, default ${DEFAULT_DWELL_MS})`,
 				width: 3,
 				default: String(DEFAULT_DWELL_MS),
-				tooltip: 'How long the Grid fader must sit inside the catch band before it takes over.' + VAR,
+				tooltip: 'How long the Grid fader has to sit inside the catch band before it takes over. Stops a quick swipe past grabbing it.' + VAR,
 			},
 			{
 				type: 'textinput',
@@ -367,7 +367,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: `Release band (± fader steps, default ${DEFAULT_RELEASE_BAND}, ${NEVER_RELEASE_BAND} = never)`,
 				width: 3,
 				default: String(DEFAULT_RELEASE_BAND),
-				tooltip: 'Once latched, only an OBS-side move bigger than this lets go of the Grid fader.' + VAR,
+				tooltip: 'Once latched, only a move on the OBS side bigger than this makes the Grid fader let go.' + VAR,
 			},
 			{
 				type: 'textinput',
@@ -375,7 +375,7 @@ class ObsAudioInstance extends InstanceBase<Config> {
 				label: `Release time (ms, default ${DEFAULT_RELEASE_MS})`,
 				width: 3,
 				default: String(DEFAULT_RELEASE_MS),
-				tooltip: 'How long an OBS-side move must stay outside the release band before the Grid fader lets go.' + VAR,
+				tooltip: 'How long a move on the OBS side has to stay outside the release band before the Grid fader lets go.' + VAR,
 			},
 			{
 				type: 'static-text',
