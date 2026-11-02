@@ -28,7 +28,9 @@ It's happy to share. Run it alongside the official OBS module and both can be co
 - the port
 - the password, or leave it blank if authentication is off
 
-Every field takes a Companion variable too, such as `$(custom:obs_ip)`. Not sure what a field does? Hover over it and it'll tell you.
+Not sure what a field does? Hover over it and it'll tell you.
+
+Heads up: connection fields don't take variables any more (that's Companion's rule now, not mine). If an old one still has a variable in it, such as `$(custom:obs_ip)`, I use the field's default instead and say so in the log. Want a variable to drive it? See **Driving the connection from a variable**, further down.
 
 **3. Open the fader page.** The connection's page shows its address as a link. Or, take your pick:
 
@@ -175,6 +177,28 @@ Overall:
 - recording: `rec_state`, `rec_time`, `rec_next`, `rec_countdown`, `rec_auto`, `rec_folder`, `rec_files`
 - `solo`
 - `notices`
+
+### Variables and expressions in actions and feedbacks
+
+Companion fills in variables for me now, before an action or feedback runs. So:
+
+- **Text fields** (an input name, a dB value, a colour and so on) take variables as they always have, such as `$(custom:mic_level)`.
+- **Every other field** (dropdowns, tickboxes) can be switched to an **expression** with the little toggle next to it. Handy when you want a variable to pick the mode, say.
+- A few fields that decide what else is shown (like **Mode** or **Value is**) stay as plain choices, so the options underneath don't jump about.
+
+Old buttons and triggers carry on as they were.
+
+### Driving the connection from a variable
+
+Connection fields can't take variables any more, but you can still change them on the fly:
+
+1. On the connection page, tick **Can be set by the action** next to each field you want to hand over. That field then locks on the page and shows what the action last set (the password and PIN stay hidden).
+2. Add the **Connection: set settings** action. Its options are just the fields you ticked. Fill in the ones to change (variables and expressions welcome); leave a field blank to leave it as is.
+3. To follow a variable, make a trigger on **variable changed** for that variable, with **Connection: set settings** as its action.
+
+When it runs, I write the new values into the connection and reconnect, or restart the fader page, as needed. A number field given something that isn't a number is skipped, with a note in the log.
+
+Untick a field and it goes back to whatever you'd typed before you ticked it. No harm done.
 
 ### Good to know
 
