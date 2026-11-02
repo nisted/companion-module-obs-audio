@@ -26,6 +26,10 @@ import { RIDER_STATES, type RiderState } from './rider.js'
 import { DEFAULT_BAND, DEFAULT_DWELL_MS, DEFAULT_FLASH_MS, DEFAULT_RELEASE_BAND, DEFAULT_RELEASE_MS, NEVER_RELEASE_BAND } from './pickup.js'
 import { parseColour, rgb, scaleColour } from './colour.js'
 
+/**
+ * The connection's saved config. Configs saved by older versions may be missing some of these
+ * (the grid fields, the store, the ticks), so every read allows for that.
+ */
 interface Config extends JsonObject {
 	host: string
 	port: string | number
@@ -35,13 +39,13 @@ interface Config extends JsonObject {
 	pin: string
 	varRateHz: string | number
 	updateHours: string | number
-	gridBand?: string | number
-	gridDwellMs?: string | number
-	gridReleaseBand?: string | number
-	gridReleaseMs?: string | number
+	gridBand: string | number
+	gridDwellMs: string | number
+	gridReleaseBand: string | number
+	gridReleaseMs: string | number
 	/** The module's own settings, saved here by the module (not edited by hand) */
-	store?: string
-	autosave?: string
+	store: string
+	autosave: string
 }
 
 interface ObsAudioTypes extends InstanceTypes {
@@ -93,7 +97,7 @@ const CONN_LABELS: Record<ConnField, string> = {
 	gridReleaseMs: `Release time (ms, default ${DEFAULT_RELEASE_MS})`,
 }
 
-const PAGE_SETTING_CHOICES =(Object.keys(PAGE_DEFAULTS) as (keyof PageSettings)[]).map((k) => ({ id: k, label: k }))
+const PAGE_SETTING_CHOICES = (Object.keys(PAGE_DEFAULTS) as (keyof PageSettings)[]).map((k) => ({ id: k, label: k }))
 
 /** Open a web address in this computer's default browser */
 function openInBrowser(url: string, warn: (m: string) => void): void {
