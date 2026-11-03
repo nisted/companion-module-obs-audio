@@ -196,7 +196,7 @@ Connection fields can't take variables any more, but you can still change them o
 2. Add the **Connection: set settings** action. Its options are just the fields you ticked. Fill in the ones to change (variables and expressions welcome); leave a field blank to leave it as is.
 3. To follow a variable, make a trigger on **variable changed** for that variable, with **Connection: set settings** as its action.
 
-When it runs, I write the new values into the connection and reconnect, or restart the fader page, as needed. A number field given something that isn't a number is skipped, with a note in the log.
+When it runs, I write the new values into the connection and reconnect, or restart the fader page, as needed. A number field given something that isn't a sensible number (not a number, not whole, or outside its range, like port 99999) is skipped, with a note in the log. The action's tooltips show each field's range.
 
 Untick a field and it goes back to whatever you'd typed before you ticked it. No harm done.
 

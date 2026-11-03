@@ -107,6 +107,18 @@ const BY_ACTION_TIP =
 /** The connection fields that hold a number */
 const NUMBER_FIELDS = new Set<ConnField>(['port', 'webPort', 'varRateHz', 'updateHours', 'gridBand', 'gridDwellMs', 'gridReleaseBand', 'gridReleaseMs'])
 
+/** Allowed whole-number range for each number field (the same limits used when the connection is applied) */
+const NUMBER_RANGES: Record<string, [number, number]> = {
+	port: [1, 65535],
+	webPort: [0, 65535],
+	varRateHz: [1, 20],
+	updateHours: [0, 720],
+	gridBand: [0, 64],
+	gridDwellMs: [0, 10000],
+	gridReleaseBand: [0, NEVER_RELEASE_BAND],
+	gridReleaseMs: [0, 60000],
+}
+
 /** Whether a connection field is ticked "Can be set by the action" */
 function isTicked(config: Config | undefined, f: ConnField): boolean {
 	return config?.[`${f}_byAction`] === true
@@ -360,9 +372,13 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				this.log('info', `Connection: set settings: "${CONN_LABELS[f]}" isn't ticked "Can be set by the action" on the connection page, so I've left it alone.`)
 				continue
 			}
-			if (NUMBER_FIELDS.has(f) && Number.isNaN(Number(v))) {
-				this.log('warn', `Connection: set settings: "${CONN_LABELS[f]}" needs a number, and "${v}" isn't one. Left it as it was.`)
-				continue
+			if (NUMBER_FIELDS.has(f)) {
+				const n = Number(v)
+				const [lo, hi] = NUMBER_RANGES[f]
+				if (!Number.isInteger(n) || n < lo || n > hi) {
+					this.log('warn', `Connection: set settings: "${CONN_LABELS[f]}" needs a whole number from ${lo} to ${hi}, and "${v}" isn't one. Left it as it was.`)
+					continue
+				}
 			}
 			if (String(next[f] ?? '') !== v) {
 				next[f] = v
@@ -1369,7 +1385,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 									f === 'webBind'
 										? 'all, local, or one of this computer\'s addresses. Blank = leave as is.'
 										: NUMBER_FIELDS.has(f)
-											? 'A number. Blank = leave as is.'
+											? `A whole number from ${NUMBER_RANGES[f][0]} to ${NUMBER_RANGES[f][1]}. Blank = leave as is.`
 											: 'Blank = leave as is.',
 							}),
 						)
