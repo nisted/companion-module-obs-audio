@@ -5,24 +5,10 @@
  * is looked up from OBS on connect.
  */
 
-export interface FilterParam {
-	key: string
-	label: string
-	type: 'number' | 'choice' | 'text'
-	min?: number
-	max?: number
-	step?: number
-	unit?: string
-	default: number | string
-	choices?: { id: string; label: string }[]
-}
+import type { ProcessingKind, ProcessingParam } from '../core/src/device.js'
 
-export interface FilterKind {
-	kind: string
-	label: string
-	defaultName: string
-	params: FilterParam[]
-}
+export type FilterParam = ProcessingParam
+export type FilterKind = ProcessingKind
 
 const detector: FilterParam = {
 	key: 'detector',
@@ -140,6 +126,7 @@ export const FILTER_KINDS: FilterKind[] = [
 		kind: 'gain_filter',
 		label: 'Gain',
 		defaultName: 'Gain',
+		inStarter: false,
 		params: [{ key: 'db', label: 'Gain', type: 'number', min: -30, max: 30, step: 0.1, unit: 'dB', default: 0 }],
 	},
 ]

@@ -18,14 +18,18 @@ import {
 } from '@companion-module/base'
 import { networkInterfaces } from 'node:os'
 import { spawn } from 'node:child_process'
-import { Engine, type InputInfo, type MonitorType } from './engine.js'
-import { WebServer } from './web.js'
-import { type Db, dbToPosition, fmtDb, parseDb, parseNumber, positionToDb, clamp, MIN_DB } from './law.js'
-import { ALL_FILTER_PARAMS, FILTER_KINDS, filterKind, slug } from './filters.js'
-import { INPUT_FIELDS, INPUT_SETTING_KEYS, PAGE_DEFAULTS, type InputSettings, type PageSettings } from './settings.js'
-import { RIDER_STATES, type RiderState } from './rider.js'
-import { DEFAULT_BAND, DEFAULT_DWELL_MS, DEFAULT_FLASH_MS, DEFAULT_RELEASE_BAND, DEFAULT_RELEASE_MS, NEVER_RELEASE_BAND } from './pickup.js'
-import { parseColour, rgb, scaleColour } from './colour.js'
+import { Engine, type InputInfo, type UserChange } from '../core/src/engine.js'
+import { WebServer } from '../core/src/web.js'
+import { type Db, fmtDb, parseDb, parseNumber, positionToDb, clamp, MIN_DB } from '../core/src/law.js'
+import { PAGE_DEFAULTS, type PageSettings } from '../core/src/settings.js'
+import { AUTOLEVEL_STATES, type AutoLevelState } from '../core/src/autolevel.js'
+import { DEFAULT_BAND, DEFAULT_DWELL_MS, DEFAULT_FLASH_MS, DEFAULT_RELEASE_BAND, DEFAULT_RELEASE_MS, NEVER_RELEASE_BAND } from '../core/src/pickup.js'
+import { parseColour, rgb, scaleColour } from '../core/src/colour.js'
+import { ALL_FILTER_PARAMS, FILTER_KINDS, filterKind, slug } from './obs-filters.js'
+import { OBS_FADER_MAX_DB, OBS_INFO, ObsDevice, obsEngineOptions } from './obs-device.js'
+import { upgradeScripts } from './upgrades.js'
+
+const MAX_DB = OBS_FADER_MAX_DB
 
 /**
  * The connection's saved config. Configs saved by older versions may be missing some of these
@@ -169,7 +173,7 @@ const inputOption: CompanionInputFieldTextInput = {
 
 const BLACK = rgb(0, 0, 0)
 
-const STATUS_COLOURS: Record<RiderState, string> = {
+const STATUS_COLOURS: Record<AutoLevelState, string> = {
 	off: '',
 	holding: '#3b2466',
 	riding: '#0077aa',
@@ -179,7 +183,7 @@ const STATUS_COLOURS: Record<RiderState, string> = {
 	calibrating: '#8b5cf6',
 }
 
-export const UpgradeScripts: CompanionStaticUpgradeScript<Config>[] = []
+export const UpgradeScripts: CompanionStaticUpgradeScript<Config>[] = upgradeScripts<Config>()
 
 export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 	config!: Config
@@ -203,13 +207,17 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				structureChanged: () => this.#structureChanged(),
 				stateChanged: () => this.#stateChanged(),
 			},
+			OBS_INFO,
+			obsEngineOptions(),
 			config.store,
 			config.autosave ?? '',
 		)
 		this.#lastSaved = config.store ?? ''
 		this.engine.on('status', () => this.#status())
-		this.engine.on('recordable', (actionId: string, options: CompanionOptionValues, key: string) => {
-			if (this.#recordingActions) this.recordAction({ actionId, options }, key)
+		this.engine.on('userChange', (c: UserChange) => {
+			if (!this.#recordingActions) return
+			const r = recordedAction(c)
+			if (r) this.recordAction({ actionId: r.actionId, options: r.options }, r.key)
 		})
 		this.updateStatus(InstanceStatus.Connecting)
 		await this.#apply()
@@ -258,7 +266,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 		this.#resolved = r
 		if (!old || old.host !== r.host || old.port !== r.port || old.password !== r.password) {
 			this.updateStatus(InstanceStatus.Connecting)
-			this.engine.connect(r.host, Math.round(r.port), r.password)
+			this.engine.useDevice(new ObsDevice({ host: r.host, port: Math.round(r.port), password: r.password }))
 		}
 		if (!old || old.webPort !== r.webPort || old.bind !== r.bind || old.pin !== r.pin) {
 			this.web?.stop()
@@ -278,7 +286,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 
 	#status(): void {
 		if (this.engine.connected) this.updateStatus(InstanceStatus.Ok)
-		else this.updateStatus(InstanceStatus.ConnectionFailure, this.engine.obs?.lastError || 'Waiting for OBS')
+		else this.updateStatus(InstanceStatus.ConnectionFailure, this.engine.deviceError || 'Waiting for OBS')
 	}
 
 	#restartVarTimer(): void {
@@ -427,7 +435,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 
 	override getConfigFields(): SomeCompanionConfigField[] {
 		const urls = this.#pageUrls()
-		const obsState = this.engine?.connected ? 'Connected to OBS. All good.' : `Not connected to OBS. ${this.engine?.obs?.lastError || ''}`
+		const obsState = this.engine?.connected ? 'Connected to OBS. All good.' : `Not connected to OBS. ${this.engine?.deviceError || ''}`
 		const nets = localAddresses()
 		/** A connection field, plus its "Can be set by the action" tick and what it shows while ticked */
 		const lock = (field: SomeCompanionConfigField & { id: ConnField }): SomeCompanionConfigField[] => [
@@ -636,6 +644,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			{ variableId: 'obs_latest', name: 'OBS: latest version' },
 			{ variableId: 'obs_update', name: 'OBS: update available' },
 			{ variableId: 'obs_error', name: 'Why OBS is not connected (blank when connected)' },
+			{ variableId: 'auto_level_count', name: 'Auto level: how many inputs have it on' },
 			{ variableId: 'page_url', name: 'Fader page address' },
 			{ variableId: 'grid_catch_band', name: 'Grid fader pickup: catch band (this connection)' },
 			{ variableId: 'grid_dwell_ms', name: 'Grid fader pickup: dwell time ms (this connection)' },
@@ -666,11 +675,13 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				{ variableId: `${p}sync`, name: `${lab}: sync offset ms` },
 				{ variableId: `${p}monitor`, name: `${lab}: monitoring` },
 				{ variableId: `${p}tracks`, name: `${lab}: recording tracks on` },
-				{ variableId: `${p}rider`, name: `${lab}: rider status` },
-				{ variableId: `${p}rider_on`, name: `${lab}: rider on` },
-				{ variableId: `${p}target`, name: `${lab}: rider target dB` },
+				{ variableId: `${p}auto_level`, name: `${lab}: auto level status` },
+				{ variableId: `${p}auto_level_on`, name: `${lab}: auto level on` },
+				{ variableId: `${p}rider`, name: `${lab}: auto level status (old name, deprecated: use ${p}auto_level)` },
+				{ variableId: `${p}rider_on`, name: `${lab}: auto level on (old name, deprecated: use ${p}auto_level_on)` },
+				{ variableId: `${p}target`, name: `${lab}: auto level target dB` },
 				{ variableId: `${p}cal`, name: `${lab}: calibrate level dB` },
-				{ variableId: `${p}level`, name: `${lab}: level the rider sees dB` },
+				{ variableId: `${p}level`, name: `${lab}: level auto level sees dB` },
 				{ variableId: `${p}rms`, name: `${lab}: post-fader average dB` },
 				{ variableId: `${p}peak`, name: `${lab}: post-fader peak dB` },
 				{ variableId: `${p}pre`, name: `${lab}: pre-fader peak dB` },
@@ -678,7 +689,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				{ variableId: `${p}backup_for`, name: `${lab}: is the backup for` },
 				{ variableId: `${p}on_backup`, name: `${lab}: switched to this backup` },
 			)
-			for (const f of inp.filters) {
+			for (const f of inp.blocks) {
 				const k = filterKind(f.kind)
 				const fp = `${p}f_${slug(f.name)}_`
 				defs.push({ variableId: `${fp}on`, name: `${lab}: ${f.name} on` })
@@ -696,10 +707,11 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			module_version: ver.moduleVersion,
 			module_latest: ver.moduleLatest ?? '',
 			module_update: ver.moduleUpdate,
-			obs_version: ver.obsVersion ?? '',
-			obs_latest: ver.obsLatest ?? '',
-			obs_update: ver.obsUpdate,
-			obs_error: this.engine.connected ? '' : (this.engine.obs?.lastError ?? ''),
+			obs_version: ver.deviceVersion ?? '',
+			obs_latest: ver.deviceLatest ?? '',
+			obs_update: ver.deviceUpdate,
+			obs_error: this.engine.connected ? '' : this.engine.deviceError,
+			auto_level_count: this.engine.visible().filter((i) => this.engine.settings(i.id).autoLevelOn).length,
 			...this.#urlVariables(),
 			...this.#recordVariables(),
 			solo: this.engine.monitoring.solo ?? '',
@@ -708,27 +720,30 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 		}
 		this.engine.visible().forEach((inp, idx) => {
 			const p = `in${idx + 1}_`
-			const set = this.engine.settings(inp.name)
-			const rec = this.engine.store.inputs[inp.name]
+			const set = this.engine.settings(inp.id)
+			const rec = this.engine.store.inputs[inp.id]
 			v[`${p}name`] = inp.name
 			v[`${p}vol`] = fmtDb(inp.volumeDb)
 			v[`${p}trim`] = inp.trimDb.toFixed(1)
 			v[`${p}mute`] = inp.muted
 			v[`${p}bal`] = Math.round((inp.balance - 0.5) * 200)
-			v[`${p}sync`] = inp.syncMs
+			v[`${p}sync`] = inp.delay
 			v[`${p}monitor`] = inp.monitor
-			v[`${p}tracks`] = Object.entries(inp.tracks)
+			v[`${p}tracks`] = Object.entries(inp.routing)
 				.filter(([, on]) => on)
 				.map(([t]) => t)
 				.join(',')
-			v[`${p}rider`] = inp.rider.state
-			v[`${p}rider_on`] = set.riderOn
+			v[`${p}auto_level`] = inp.autoLevel.state
+			v[`${p}auto_level_on`] = set.autoLevelOn
+			// old names, kept working for a while (deprecated)
+			v[`${p}rider`] = inp.autoLevel.state
+			v[`${p}rider_on`] = set.autoLevelOn
 			v[`${p}target`] = rec?.target === null || rec?.target === undefined ? '' : rec.target.toFixed(1)
 			v[`${p}cal`] = set.calibrateDb
 			v[`${p}pfl`] = this.engine.monitoring.pflShown(inp)
 			v[`${p}backup_for`] = this.engine.backups.mainOf(inp)?.name ?? ''
-			v[`${p}on_backup`] = this.engine.backups.onBackup(inp.name)
-			for (const f of inp.filters) {
+			v[`${p}on_backup`] = this.engine.backups.onBackup(inp.id)
+			for (const f of inp.blocks) {
 				const k = filterKind(f.kind)
 				const fp = `${p}f_${slug(f.name)}_`
 				v[`${fp}on`] = f.enabled
@@ -768,7 +783,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 		const max = (a: Db[]) => a.reduce<Db>((m, x) => (x !== null && (m === null || x > m) ? x : m), null)
 		this.engine.visible().forEach((inp, idx) => {
 			const p = `in${idx + 1}_`
-			v[`${p}level`] = fmtDb(inp.rider.level)
+			v[`${p}level`] = fmtDb(inp.autoLevel.level)
 			v[`${p}rms`] = fmtDb(max(inp.postMag))
 			v[`${p}peak`] = fmtDb(max(inp.postPeak))
 			v[`${p}pre`] = fmtDb(max(inp.prePeak))
@@ -793,7 +808,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			{ id: 'off', label: 'Off' },
 		]
 		const flip = (mode: unknown, current: boolean) => (mode === 'on' ? true : mode === 'off' ? false : !current)
-		const settingChoices = INPUT_SETTING_KEYS.map((k) => ({ id: k, label: INPUT_FIELDS[k].label }))
+		const settingChoices = Object.entries(e.schema.fields).map(([k, f]) => ({ id: k, label: f.label }))
 		const ticked = this.#tickedFields()
 
 		return {
@@ -823,7 +838,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			},
 			ag_capture: {
 				name: 'Auto gain: this level please',
-				description: 'Capture the current level as the rider target',
+				description: 'Capture the current level as the auto level target',
 				options: [inputOption],
 				callback: async ({ options }) => {
 					const inp = this.#input(options)
@@ -858,16 +873,16 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					} else e.calibrate(inp, options.to === 'module' ? 'module' : 'input')
 				},
 			},
-			ag_rider: {
-				name: 'Auto gain: rider on / off',
-				options: [inputOption, { type: 'dropdown', label: 'Rider', id: 'mode', default: 'toggle', choices: onOffToggle }],
+			ag_auto_level: {
+				name: 'Auto gain: auto level on / off',
+				options: [inputOption, { type: 'dropdown', label: 'Auto level', id: 'mode', default: 'toggle', choices: onOffToggle }],
 				callback: async ({ options }) => {
 					const inp = this.#input(options)
-					if (inp) e.setInputSetting(inp.name, 'riderOn', flip(options.mode, e.settings(inp.name).riderOn))
+					if (inp) e.setInputSetting(inp.id, 'autoLevelOn', flip(options.mode, e.settings(inp.id).autoLevelOn))
 				},
 			},
 			ag_target: {
-				name: 'Auto gain: set the rider target',
+				name: 'Auto gain: set the auto level target',
 				options: [
 					inputOption,
 					{ type: 'dropdown', label: 'Mode', id: 'mode', default: 'set', disableAutoExpression: true, choices: modeChoices([{ id: 'clear', label: 'Clear the target' }]) },
@@ -879,7 +894,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					if (options.mode === 'clear') return e.setTarget(inp, null)
 					const n = parseNumber(this.#text(options, 'db'), NaN, -100, 26)
 					if (Number.isNaN(n)) return
-					const cur = e.store.inputs[inp.name]?.target ?? null
+					const cur = e.store.inputs[inp.id]?.target ?? null
 					if (options.mode === 'adjust') {
 						if (cur === null) return this.log('warn', `${inp.name} has no target to adjust`)
 						e.setTarget(inp, cur + n)
@@ -913,11 +928,11 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					},
 				],
 				callback: async ({ options }) => {
-					const key = String(options.key) as keyof InputSettings
+					const key = String(options.key)
 					const value = this.#text(options, 'value')
 					if (options.scope === 'default') return e.setDefaultSetting(key, value)
 					const inp = this.#input(options)
-					if (inp) e.setInputSetting(inp.name, key, value.toLowerCase() === 'default' ? undefined : value)
+					if (inp) e.setInputSetting(inp.id, key, value.toLowerCase() === 'default' ? undefined : value)
 				},
 			},
 			volume: {
@@ -935,8 +950,8 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					if (db === undefined) return this.log('warn', 'Fader: the level isn\'t a number')
 					if (options.mode === 'adjust') {
 						if (inp.volumeDb === null || db === null) return
-						e.setVolume(inp, clamp(inp.volumeDb + db, MIN_DB, 26))
-					} else e.setVolume(inp, db === null ? null : clamp(db, MIN_DB, 26), parseNumber(this.#text(options, 'fade'), 0, 0, 600000))
+						e.setVolume(inp, clamp(inp.volumeDb + db, MIN_DB, MAX_DB))
+					} else e.setVolume(inp, db === null ? null : clamp(db, MIN_DB, MAX_DB), parseNumber(this.#text(options, 'fade'), 0, 0, 600000))
 				},
 			},
 			volume_grid: {
@@ -988,7 +1003,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					const raw = this.#text(options, 'value')
 					if (options.valueType === 'db') {
 						const db = parseDb(raw)
-						if (db !== undefined) e.setVolume(inp, db === null ? null : clamp(db, MIN_DB, 26))
+						if (db !== undefined) e.setVolume(inp, db === null ? null : clamp(db, MIN_DB, MAX_DB))
 						return
 					}
 					const n = Number(raw)
@@ -1003,7 +1018,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 						releaseBand: parseNumber(this.#text(options, 'releaseBand'), g.releaseBand, 0, NEVER_RELEASE_BAND),
 						releaseMs: parseNumber(this.#text(options, 'releaseMs'), g.releaseMs, 0, 60000),
 					}
-					if (e.pickup.handle(inp.name, incoming, settings, send)) send(incoming)
+					if (e.pickup.handle(inp.id, incoming, settings, send)) send(incoming)
 				},
 			},
 			trim: {
@@ -1058,7 +1073,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					if (!inp) return
 					const n = parseNumber(this.#text(options, 'value'), NaN)
 					if (Number.isNaN(n)) return
-					await e.setSync(inp, options.mode === 'adjust' ? inp.syncMs + n : n)
+					await e.setDelay(inp, options.mode === 'adjust' ? inp.delay + n : n)
 				},
 			},
 			monitor: {
@@ -1093,7 +1108,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				callback: async ({ options }) => {
 					const inp = this.#input(options)
 					if (!inp) return
-					const v = options.value === 'toggle' ? (inp.monitor === 'none' ? (options.toggleTo as MonitorType) : 'none') : (options.value as MonitorType)
+					const v = options.value === 'toggle' ? (inp.monitor === 'none' ? String(options.toggleTo) : 'none') : String(options.value)
 					await e.setMonitor(inp, v)
 				},
 			},
@@ -1112,8 +1127,8 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 						.map((t) => parseInt(t, 10))
 						.filter((t) => t >= 1 && t <= 6)
 					const changes: Record<string, boolean> = {}
-					for (const t of list) changes[String(t)] = flip(options.mode, !!inp.tracks[String(t)])
-					if (list.length) await e.setTracks(inp, changes)
+					for (const t of list) changes[String(t)] = flip(options.mode, !!inp.routing[String(t)])
+					if (list.length) await e.setRouting(inp, changes)
 				},
 			},
 			filter_add: {
@@ -1125,7 +1140,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				],
 				callback: async ({ options }) => {
 					const inp = this.#input(options)
-					if (inp) await e.addFilter(inp, String(options.kind), this.#text(options, 'name'))
+					if (inp) await e.addBlock(inp, String(options.kind), this.#text(options, 'name'))
 				},
 			},
 			filter_remove: {
@@ -1133,7 +1148,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				options: [inputOption, { type: 'textinput', label: 'Filter name', id: 'filter', default: '', useVariables: true }],
 				callback: async ({ options }) => {
 					const inp = this.#input(options)
-					if (inp) await e.removeFilter(inp, this.#text(options, 'filter'))
+					if (inp) await e.removeBlock(inp, this.#text(options, 'filter'))
 				},
 			},
 			filter_enable: {
@@ -1147,9 +1162,9 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					const inp = this.#input(options)
 					if (!inp) return
 					const name = this.#text(options, 'filter')
-					const f = inp.filters.find((x) => x.name === name)
+					const f = inp.blocks.find((x) => x.id === name)
 					if (!f) return this.log('warn', `${inp.name} has no filter "${name}"`)
-					await e.setFilterEnabled(inp, name, flip(options.mode, f.enabled))
+					await e.setBlockEnabled(inp, f.id, flip(options.mode, f.enabled))
 				},
 			},
 			filter_set: {
@@ -1167,7 +1182,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					const p = ALL_FILTER_PARAMS.find((x) => x.id === options.param)
 					if (!p) return
 					const name = this.#text(options, 'filter')
-					const f = name ? inp.filters.find((x) => x.name === name) : inp.filters.find((x) => x.kind === p.kind.kind)
+					const f = name ? inp.blocks.find((x) => x.id === name) : inp.blocks.find((x) => x.kind === p.kind.kind && !x.isTrim)
 					if (!f) return this.log('warn', `${inp.name} has no ${name || p.kind.label} filter`)
 					const raw = this.#text(options, 'value')
 					let value: unknown = raw
@@ -1181,7 +1196,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 						if (!c) return this.log('warn', `"${raw}" isn't a choice for ${p.label}`)
 						value = c.id
 					}
-					await e.setFilterSetting(inp, f.name, p.param.key, value)
+					await e.setBlockParam(inp, f.id, p.param.key, value)
 				},
 			},
 			pfl: {
@@ -1213,7 +1228,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				],
 				callback: async ({ options }) => {
 					const inp = this.#input(options)
-					if (inp) await e.monitoring.setSolo(inp, flip(options.mode, e.monitoring.solo === inp.name))
+					if (inp) await e.monitoring.setSolo(inp, flip(options.mode, e.monitoring.solo === inp.id))
 				},
 			},
 			backup_switch: {
@@ -1237,17 +1252,17 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					const inp = this.#input(options)
 					if (!inp) return
 					if (!e.backups.mainOf(inp)) return this.log('warn', `${inp.name} isn't set as a backup for another input`)
-					const toBackup = options.to === 'backup' || (options.to === 'toggle' && !e.backups.onBackup(inp.name))
+					const toBackup = options.to === 'backup' || (options.to === 'toggle' && !e.backups.onBackup(inp.id))
 					if (toBackup) e.backups.switchToBackup(inp, 'it was switched by hand')
 					else e.backups.switchToMain(inp)
 				},
 			},
-			rider_all: {
-				name: 'Auto gain: every rider on / off',
+			auto_level_all: {
+				name: 'Auto gain: auto level on / off for every input',
 				options: [
 					{
 						type: 'dropdown',
-						label: 'Riders',
+						label: 'Auto level',
 						id: 'mode',
 						default: 'off',
 						choices: [
@@ -1257,7 +1272,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					},
 				],
 				callback: ({ options }) => {
-					for (const inp of e.visible()) e.setInputSetting(inp.name, 'riderOn', options.mode === 'on')
+					for (const inp of e.visible()) e.setInputSetting(inp.id, 'autoLevelOn', options.mode === 'on')
 				},
 			},
 			record: {
@@ -1328,7 +1343,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					const prefix = this.#text(options, 'prefix')
 					const rest = this.#text(options, 'rest')
 					try {
-						await e.recorder.setFilenameFormat(prefix ? `${prefix} ${rest}` : rest)
+						await e.recorder.setFileName(prefix ? `${prefix} ${rest}` : rest)
 					} catch (err) {
 						this.log('warn', `Recording file name: ${(err as Error).message}`)
 					}
@@ -1420,16 +1435,16 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			({ type: 'textinput', label, id, default: def, useVariables: true, tooltip: tooltip ?? '#rrggbb, r,g,b or a variable. Blank = leave as is.' }) as const
 		const inputFor = (o: CompanionOptionValues) => e.resolve(this.#text(o, 'input'))
 		return {
-			rider_status: {
+			auto_level_status: {
 				type: 'advanced',
-				name: 'Auto gain: rider status colours',
+				name: 'Auto gain: auto level status colours',
 				affectedProperties: ['bgcolor'],
-				description: 'Background colour for what the rider is doing on an input',
-				options: [inputOption, ...RIDER_STATES.map((s) => colourOpt(`c_${s.id}`, s.label, STATUS_COLOURS[s.id]))],
+				description: 'Background colour for what auto level is doing on an input',
+				options: [inputOption, ...AUTOLEVEL_STATES.map((s) => colourOpt(`c_${s.id}`, s.label, STATUS_COLOURS[s.id]))],
 				callback: (fb) => {
 					const inp = inputFor(fb.options)
 					if (!inp) return {}
-					const c = parseColour(this.#text(fb.options, `c_${inp.rider.state}`), undefined)
+					const c = parseColour(this.#text(fb.options, `c_${inp.autoLevel.state}`), undefined)
 					return c === undefined ? {} : { bgcolor: c }
 				},
 			},
@@ -1448,7 +1463,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				name: 'Input: soloed',
 				defaultStyle: { bgcolor: rgb(200, 150, 0), color: rgb(0, 0, 0) },
 				options: [inputOption],
-				callback: (fb) => inputFor(fb.options)?.name === e.monitoring.solo,
+				callback: (fb) => inputFor(fb.options)?.id === e.monitoring.solo,
 			},
 			on_backup: {
 				type: 'boolean',
@@ -1457,7 +1472,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				options: [{ ...inputOption, label: 'Backup input (name or number)' }],
 				callback: (fb) => {
 					const inp = inputFor(fb.options)
-					return !!inp && e.backups.onBackup(inp.name)
+					return !!inp && e.backups.onBackup(inp.id)
 				},
 			},
 			recording: {
@@ -1520,17 +1535,17 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				],
 				callback: (fb) => {
 					const v = e.versions
-					return fb.options.which === 'module' ? v.moduleUpdate : fb.options.which === 'obs' ? v.obsUpdate : v.moduleUpdate || v.obsUpdate
+					return fb.options.which === 'module' ? v.moduleUpdate : fb.options.which === 'obs' ? v.deviceUpdate : v.moduleUpdate || v.deviceUpdate
 				},
 			},
-			rider_on: {
+			auto_level_on: {
 				type: 'boolean',
-				name: 'Auto gain: rider is on',
+				name: 'Auto gain: auto level is on',
 				defaultStyle: { bgcolor: rgb(85, 0, 170), color: rgb(255, 255, 255) },
 				options: [inputOption],
 				callback: (fb) => {
 					const inp = inputFor(fb.options)
-					return !!inp && e.settings(inp.name).riderOn
+					return !!inp && e.settings(inp.id).autoLevelOn
 				},
 			},
 			muted: {
@@ -1572,7 +1587,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				options: [inputOption, { type: 'textinput', label: 'Track (1-6)', id: 'track', default: '1', useVariables: true }],
 				callback: (fb) => {
 					const inp = inputFor(fb.options)
-					return !!inp?.tracks[this.#text(fb.options, 'track')]
+					return !!inp?.routing[this.#text(fb.options, 'track')]
 				},
 			},
 			filter_on: {
@@ -1583,7 +1598,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				callback: (fb) => {
 					const inp = inputFor(fb.options)
 					const name = this.#text(fb.options, 'filter')
-					return !!inp?.filters.find((f) => f.name === name)?.enabled
+					return !!inp?.blocks.find((f) => f.id === name)?.enabled
 				},
 			},
 			level_above: {
@@ -1601,7 +1616,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 							{ id: 'peak', label: 'Post-fader peak' },
 							{ id: 'rms', label: 'Post-fader average' },
 							{ id: 'pre', label: 'Pre-fader peak' },
-							{ id: 'level', label: 'What the rider sees' },
+							{ id: 'level', label: 'What auto level sees' },
 						],
 					},
 					{ type: 'textinput', label: 'Threshold (dB)', id: 'db', default: '-6', useVariables: true },
@@ -1611,7 +1626,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					if (!inp) return false
 					const th = parseNumber(this.#text(fb.options, 'db'), 0)
 					const max = (a: Db[]) => a.reduce<Db>((m, x) => (x !== null && (m === null || x > m) ? x : m), null)
-					const v = fb.options.meter === 'rms' ? max(inp.postMag) : fb.options.meter === 'pre' ? max(inp.prePeak) : fb.options.meter === 'level' ? inp.rider.level : max(inp.postPeak)
+					const v = fb.options.meter === 'rms' ? max(inp.postMag) : fb.options.meter === 'pre' ? max(inp.prePeak) : fb.options.meter === 'level' ? inp.autoLevel.level : max(inp.postPeak)
 					return v !== null && v >= th
 				},
 			},
@@ -1639,7 +1654,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					if (!inp) return {}
 					const raw = this.#text(o, 'value')
 					const n = Number(raw)
-					const { led, position } = e.pickup.ledState(inp.name, raw === '' || Number.isNaN(n) ? undefined : n)
+					const { led, position } = e.pickup.ledState(inp.id, raw === '' || Number.isNaN(n) ? undefined : n)
 					const flashMs = parseNumber(this.#text(o, 'flashMs'), DEFAULT_FLASH_MS, 50, 5000)
 					const off = Math.floor(Date.now() / flashMs) % 2 === 1
 					const col = (id: string, def: number) => parseColour(this.#text(o, id), def) ?? def
@@ -1694,8 +1709,8 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 		button('page_url', 'Fader page address', '$(' + L + ':page_url)', [], [])
 		button('connected', 'OBS connection', 'OBS', [], [{ feedbackId: 'connected', options: {}, style: { bgcolor: rgb(0, 120, 60) } }])
 		button('update', 'Update available', 'UPDATE', [{ actionId: 'open_page', options: {} }], [{ feedbackId: 'update_available', options: { which: 'either' }, style: { bgcolor: purple } }])
-		button('riders_on', 'All riders on', 'ALL\\nRIDERS\\nON', [{ actionId: 'rider_all', options: { mode: 'on' } }])
-		button('riders_off', 'All riders off', 'ALL\\nRIDERS\\nOFF', [{ actionId: 'rider_all', options: { mode: 'off' } }])
+		button('auto_level_on', 'Auto level on for every input', 'ALL AUTO\\nLEVEL\\nON', [{ actionId: 'auto_level_all', options: { mode: 'on' } }])
+		button('auto_level_off', 'Auto level off for every input', 'ALL AUTO\\nLEVEL\\nOFF', [{ actionId: 'auto_level_all', options: { mode: 'off' } }])
 		button('record', 'Record start / stop', 'REC\\n$(' + L + ':rec_time)', [{ actionId: 'record', options: { mode: 'toggle' } }], [
 			{ feedbackId: 'recording', options: { state: 'active' }, style: { bgcolor: rgb(200, 0, 0) } },
 			{ feedbackId: 'recording', options: { state: 'paused' }, style: { bgcolor: rgb(150, 100, 0) } },
@@ -1717,14 +1732,14 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				'Auto gain button: press = this level, double tap = calibrate, hold = calibrate to module level',
 				`${name}\\nAG $(${L}:in${n}_target)`,
 				[{ actionId: 'ag_button', options: { input: i, edge: 'down' } }],
-				[{ feedbackId: 'rider_status', options: { input: i, ...Object.fromEntries(RIDER_STATES.map((st) => [`c_${st.id}`, STATUS_COLOURS[st.id]])) } }],
+				[{ feedbackId: 'auto_level_status', options: { input: i, ...Object.fromEntries(AUTOLEVEL_STATES.map((st) => [`c_${st.id}`, STATUS_COLOURS[st.id]])) } }],
 				[{ actionId: 'ag_button', options: { input: i, edge: 'up' } }],
 			)
-			button(`rider_${n}`, 'Rider on / off', `${name}\\nRIDER`, [{ actionId: 'ag_rider', options: { input: i, mode: 'toggle' } }], [
-				{ feedbackId: 'rider_on', options: { input: i }, style: { bgcolor: purple, color: white } },
+			button(`auto_level_${n}`, 'Auto level on / off', `${name}\\nAUTO\\nLEVEL`, [{ actionId: 'ag_auto_level', options: { input: i, mode: 'toggle' } }], [
+				{ feedbackId: 'auto_level_on', options: { input: i }, style: { bgcolor: purple, color: white } },
 			])
-			button(`status_${n}`, 'Rider status and target', `${name}\\n$(${L}:in${n}_rider)\\n$(${L}:in${n}_target)`, [], [
-				{ feedbackId: 'rider_status', options: { input: i, ...Object.fromEntries(RIDER_STATES.map((st) => [`c_${st.id}`, STATUS_COLOURS[st.id]])) } },
+			button(`status_${n}`, 'Auto level status and target', `${name}\\n$(${L}:in${n}_auto_level)\\n$(${L}:in${n}_target)`, [], [
+				{ feedbackId: 'auto_level_status', options: { input: i, ...Object.fromEntries(AUTOLEVEL_STATES.map((st) => [`c_${st.id}`, STATUS_COLOURS[st.id]])) } },
 			])
 			button(`capture_${n}`, 'This level please', `${name}\\nTHIS\\nLEVEL`, [{ actionId: 'ag_capture', options: { input: i } }])
 			button(`cal_${n}`, "Calibrate to the input's level", `${name}\\nCAL\\n$(${L}:in${n}_cal)`, [{ actionId: 'ag_calibrate', options: { input: i, to: 'input' } }])
@@ -1767,8 +1782,8 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					{ feedbackId: 'track_on', options: { input: i, track: String(t) }, style: { bgcolor: purple, color: white } },
 				])
 			}
-			for (const f of inp.filters) {
-				if (f.name === this.engine.settings(inp.name).trimFilterName) continue
+			for (const f of inp.blocks) {
+				if (f.isTrim) continue
 				button(`filter_${n}_${slug(f.name)}`, `${f.name} on / off`, `${name}\\n${f.name.toUpperCase()}`, [
 					{ actionId: 'filter_enable', options: { input: i, filter: f.name, mode: 'toggle' } },
 				], [{ feedbackId: 'filter_on', options: { input: i, filter: f.name }, style: { bgcolor: rgb(0, 120, 60), color: white } }])
@@ -1780,5 +1795,36 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			}
 		})
 		return { structure, presets }
+	}
+}
+
+/** A hand-made change (fader page or OBS itself) as one of this module's actions, for the action recorder */
+function recordedAction(c: UserChange): { actionId: string; options: CompanionOptionValues; key: string } | undefined {
+	const input = c.input
+	switch (c.kind) {
+		case 'volume':
+			return { actionId: 'volume', options: { input, mode: 'set', db: c.db === null ? '-inf' : c.db.toFixed(1), fade: '0' }, key: `vol:${input}` }
+		case 'trim':
+			return { actionId: 'trim', options: { input, mode: 'set', db: String(c.db) }, key: `trim:${input}` }
+		case 'mute':
+			return { actionId: 'mute', options: { input, mode: c.muted ? 'on' : 'off' }, key: `mute:${input}` }
+		case 'balance':
+			return { actionId: 'balance', options: { input, mode: 'set', value: String(Math.round((c.balance - 0.5) * 200)) }, key: `bal:${input}` }
+		case 'delay':
+			return { actionId: 'sync', options: { input, mode: 'set', value: String(c.value) }, key: `sync:${input}` }
+		case 'monitor':
+			return { actionId: 'monitor', options: { input, value: c.value, toggleTo: 'both' }, key: `mon:${input}` }
+		case 'routing':
+			return { actionId: 'tracks', options: { input, tracks: c.target, mode: c.on ? 'on' : 'off' }, key: `tracks:${input}:${c.target}` }
+		case 'blockEnabled':
+			return { actionId: 'filter_enable', options: { input, filter: c.block.name, mode: c.on ? 'on' : 'off' }, key: `fon:${input}:${c.block.id}` }
+		case 'blockParam':
+			return {
+				actionId: 'filter_set',
+				options: { input, param: `${c.block.kind}:${c.key}`, filter: c.block.name, mode: 'set', value: String(c.value) },
+				key: `f:${input}:${c.block.id}:${c.key}`,
+			}
+		default:
+			return undefined
 	}
 }

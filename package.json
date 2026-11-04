@@ -1,8 +1,8 @@
 {
 	"name": "obs-audio",
-	"version": "0.1.2",
+	"version": "0.2.0",
 	"type": "module",
-	"main": "dist/main.js",
+	"main": "dist/src/main.js",
 	"scripts": {
 		"build": "node scripts/embed-page.mjs && rimraf dist && tsc -p tsconfig.build.json",
 		"package": "run build && companion-module-build",

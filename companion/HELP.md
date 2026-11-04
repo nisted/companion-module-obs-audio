@@ -2,7 +2,7 @@
 
 A proper audio desk for OBS Studio. Here's what's in the box:
 
-- an auto gain rider and calibrate on each input
+- auto level and calibrate on each input (auto level used to be called the rider)
 - Intech Grid (or any MIDI) faders with pickup
 - PFL and solo on OBS's monitoring
 - automatic switching to backup feeds
@@ -56,7 +56,7 @@ If OBS is on another computer, its firewall needs to let the port through.
 
 Each input gets a strip, just like a sound desk. Left to right:
 
-- **Fader and meters.** PRE is the level before the fader; POST is what's recorded. Each strip has PRE / POST / FINE buttons, and the meter shows the rider's target line and band. Drag the fader; use FINE (or two fingers) for small moves; double tap for 0 dB.
+- **Fader and meters.** PRE is the level before the fader; POST is what's recorded. Each strip has PRE / POST / FINE buttons, and the meter shows auto level's target line and band. Drag the fader; use FINE (or two fingers) for small moves; double tap for 0 dB.
 - **Channel settings.** Basic auto gain sits at the top, with sections of controls underneath. Knobs work by dragging up and down: Shift for fine, double click to reset, click the value to type one.
 - **Show advanced.** Opens every auto gain and backup setting over the channel settings. **Pin** keeps it open as a third column.
 - **MUTE / PFL / SOLO** live at the bottom of each strip.
@@ -102,9 +102,9 @@ Every threshold and time is a setting, so tune away.
 
 ### Auto gain
 
-Each input has a **rider** (on/off) and **calibrate**.
+Each input has **auto level** (on/off) and **calibrate**.
 
-- **This level please:** set the fader by ear, then capture that level as the target. The rider leaves it alone while the level stays inside the band, and rides it back when it wanders out.
+- **This level please:** set the fader by ear, then capture that level as the target. Auto level leaves it alone while the level stays inside the band, and rides it back when it wanders out.
 - **Calibrate:** brings the input to a set level once, then stops.
 - **The input button** (the per-input preset "AG"):
   - **press** = this level please
@@ -120,7 +120,7 @@ What it moves is up to you, per input:
 
 Every setting has a page-wide default (Settings → Auto gain defaults) and can be changed per input under Show advanced. Changed values show purple, and ↺ puts one back to the default.
 
-Heads up: if the rider moves the fader on an input, a Grid fader latched to that input lets go each time, because that counts as an outside move. Ride the trim instead and you keep both.
+Heads up: if auto level moves the fader on an input, a Grid fader latched to that input lets go each time, because that counts as an outside move. Ride the trim instead and you keep both.
 
 ### Intech Grid faders
 
@@ -138,14 +138,14 @@ Use **Fader: from a value (Intech Grid fader), with pickup** in a trigger that r
 - open the fader page, and its address
 - connection status
 - update available
-- every rider on or off
+- auto level on or off for every input
 - record
 - next planned start
 - pop-ups waiting
 
 **Per input:**
 
-- the AG button, rider, status, this level and the two calibrates
+- the AG button, auto level, status, this level and the two calibrates
 - mute, PFL, solo (hold and latch)
 - level, fader ±1 / ±3 / 0, trim ±1
 - recording tracks
@@ -166,7 +166,7 @@ Per input, numbered in list order (`in1_` …):
 
 - name, fader, trim, mute, balance, sync, monitoring, tracks
 - PFL and backup state
-- rider status and target, calibrate level
+- auto level status and target (`auto_level`, `auto_level_on`, `target`), calibrate level
 - meters (`level`, `rms`, `peak`, `pre`)
 - every filter's settings
 
@@ -177,6 +177,18 @@ Overall:
 - recording: `rec_state`, `rec_time`, `rec_next`, `rec_countdown`, `rec_auto`, `rec_folder`, `rec_files`
 - `solo`
 - `notices`
+
+### "Rider" is now "Auto Level" (0.2.0)
+
+Same feature, better name. Everything that said rider now says auto level: the page, actions, feedbacks, presets and variables. Your old buttons and triggers are upgraded by themselves when you update, so nothing needs redoing:
+
+- **Auto gain: rider on / off** → **Auto gain: auto level on / off**
+- **Auto gain: every rider on / off** → **Auto gain: auto level on / off for every input**
+- **rider status colours** and **rider is on** feedbacks → the **auto level** ones
+- "Rider on" in **Auto gain: change a setting** → "Auto level on"
+- `in1_rider` → `in1_auto_level`, `in1_rider_on` → `in1_auto_level_on` (in action and feedback fields)
+
+The old variables `inN_rider` and `inN_rider_on` still work for now, marked *deprecated* in the variable list. They'll go in a later version, so swap them over when you get a mo. Button text that shows an old variable keeps working too, as the old ones are still there. Saved settings (targets, every per-input choice) carry straight over.
 
 ### Variables and expressions in actions and feedbacks
 
@@ -204,6 +216,7 @@ Untick a field and it goes back to whatever you'd typed before you ticked it. No
 
 - The input list follows OBS's input order, which isn't always the order of OBS's mixer. Reorder it in Settings → Inputs.
 - obs-websocket doesn't report gain reduction from OBS's compressor and limiter, so there are no gain-reduction meters. Sorry about that.
+- Under the hood, OBS Audio runs on the Rebels' shared audio core ([rebel-audio-core](https://github.com/nisted/rebel-audio-core)), the same one ATEM Audio will use. A fix there lands in both.
 - The page uses web fonts when online and falls back to built-in fonts at a venue with no internet. So no drama when the Wi-Fi's down.
 
 ### Psst. This one's got mates. 🍹

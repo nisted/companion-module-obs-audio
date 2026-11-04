@@ -4,7 +4,7 @@
 	"id": "obs-audio",
 	"name": "obs-audio",
 	"shortname": "OBS Audio",
-	"description": "OBS audio desk: auto gain rider and calibrate, Intech Grid faders with pickup, processing, recording tracks, and a fader and meter web page",
+	"description": "OBS audio desk: auto level and calibrate, Intech Grid faders with pickup, processing, recording tracks, and a fader and meter web page",
 	"version": "0.0.0",
 	"license": "MIT",
 	"repository": "git+https://github.com/nisted/companion-module-obs-audio.git",
@@ -15,7 +15,7 @@
 		"type": "node22",
 		"api": "nodejs-ipc",
 		"apiVersion": "0.0.0",
-		"entrypoint": "../dist/main.js"
+		"entrypoint": "../dist/src/main.js"
 	},
 	"manufacturer": "OBS Project",
 	"products": ["OBS Audio"],

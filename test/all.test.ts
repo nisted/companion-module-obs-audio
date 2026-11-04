@@ -1,243 +1,27 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { dbToPosition, positionToDb, type LawSettings } from '../src/law.js'
-import { Rider, type MeterSample } from '../src/rider.js'
-import { INPUT_DEFAULTS, type InputRecord, type InputSettings, loadStore, newStore, applyImport } from '../src/settings.js'
-import { PickupManager } from '../src/pickup.js'
-import { GestureReader, type Gesture } from '../src/gesture.js'
-import { Engine } from '../src/engine.js'
-import { WebServer } from '../src/web.js'
+import type { CompanionMigrationAction, CompanionMigrationFeedback } from '@companion-module/base'
+import { Engine, type EngineHost } from '../core/src/engine.js'
+import { WebServer } from '../core/src/web.js'
+import { INPUT_DEFAULTS } from '../core/src/settings.js'
 import { FakeObs } from './fake-obs.js'
-import { compareVersions, newVersionInfo, pickNewest, recompute } from '../src/updates.js'
 import { explainClose } from '../src/obs.js'
+import { OBS_INFO, ObsDevice, obsEngineOptions } from '../src/obs-device.js'
+import { upgradeRiderToAutoLevel, renameVariables } from '../src/upgrades.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-const mul = (db: number) => Math.pow(10, db / 20)
 
-test('fader law round trips and puts unity at three quarters', () => {
-	const law: LawSettings = { kind: 'desk', topDb: 10, bottomDb: -60 }
-	assert.equal(positionToDb(0, law), null)
-	assert.equal(positionToDb(0.75, law), 0)
-	assert.equal(positionToDb(1, law), 10)
-	for (const db of [-90, -60, -33.3, -12, -6, -1, 0, 3, 10]) {
-		const back = positionToDb(dbToPosition(db, law), law)!
-		assert.ok(Math.abs(back - db) < 0.01, `${db} -> ${back}`)
-	}
-	const lin: LawSettings = { kind: 'linear', topDb: 10, bottomDb: -60 }
-	assert.ok(Math.abs(positionToDb(0.5, lin)! - -25) < 1e-9)
-})
+/** The engine as OBS Audio's main.ts makes it */
+const obsEngine = (host: EngineHost, store: unknown) => new Engine(host, OBS_INFO, obsEngineOptions(), store, '')
 
-/** A rider wired to a pretend input, driven with synthetic meter readings */
-function rig(over: Partial<InputSettings> = {}) {
-	const set: InputSettings = { ...INPUT_DEFAULTS, riderOn: true, measureWindowMs: 500, rideRateDbPerS: 4, captureMode: 'instant', ...over }
-	const rec: InputRecord = { overrides: {}, sections: {}, target: null, refGain: null }
-	const st = { fader: 0 as number | null, trim: 0, raw: -20 as number | null, muted: false, t: 1000, offCalled: false }
-	const r = new Rider({
-		settings: () => set,
-		record: () => rec,
-		saveRecord: () => {},
-		setGain: (db) => {
-			if (set.controlMode === 'trim') st.trim = db
-			else st.fader = db
-		},
-		riderOff: () => {
-			st.offCalled = true
-			set.riderOn = false
-		},
-		log: () => {},
-		changed: () => {},
-	})
-	const step = (ms: number) => {
-		for (let i = 0; i < ms / 50; i++) {
-			st.t += 50
-			const x = st.raw === null ? 0 : mul(st.raw + st.trim)
-			const sample: MeterSample = {
-				t: st.t,
-				mag: [x * (st.muted ? 0 : st.fader === null ? 0 : mul(st.fader)), x * (st.muted ? 0 : st.fader === null ? 0 : mul(st.fader))],
-				prePeak: [x * 2, x * 2],
-				faderDb: st.fader,
-				trimDb: st.trim,
-				muted: st.muted,
-			}
-			r.onMeter(sample)
-		}
-	}
-	return { r, set, rec, st, step }
-}
-
-test('rider captures a target and rides the fader back, within the limits', () => {
-	const { r, set, rec, st, step } = rig()
-	step(1000)
-	r.captureTarget()
-	assert.ok(Math.abs(rec.target! - -20) < 0.6, `target ${rec.target}`)
-	assert.equal(rec.refGain, 0)
-	st.raw = -28 // source drops 8 dB
-	step(6000)
-	assert.ok(Math.abs(st.fader! - 6) < 0.05, `fader stopped at max boost: ${st.fader}`)
-	assert.equal(r.state, 'limit')
-	set.maxBoostDb = 12
-	step(6000)
-	assert.ok(st.fader! > 7.4 && st.fader! < 8.6, `fader back near +8: ${st.fader}`)
-	assert.equal(r.state, 'holding')
-})
-
-test('rider stays put inside the band', () => {
-	const { r, rec, st, step } = rig({ bandDb: 3 })
-	step(1000)
-	r.captureTarget()
-	st.raw = -22
-	step(4000)
-	assert.equal(st.fader, 0)
-	assert.equal(r.state, 'holding')
-	assert.ok(rec.target !== null)
-})
-
-test('ride back "just inside the band" stops sooner than "to the target"', () => {
-	const a = rig({ rideBack: 'band', bandDb: 3 })
-	a.step(1000)
-	a.r.captureTarget()
-	a.st.raw = -28
-	a.step(8000)
-	assert.ok(a.st.fader! > 4.4 && a.st.fader! < 5.6, `band mode fader ${a.st.fader}`)
-})
-
-test('rider freezes when quiet or muted, and drifts back if set to', () => {
-	const { r, set, st, step } = rig()
-	step(1000)
-	r.captureTarget()
-	st.raw = -28
-	step(1000)
-	const moved = st.fader!
-	st.raw = null
-	step(3000)
-	assert.equal(r.state, 'frozen')
-	assert.equal(st.fader, moved)
-	st.raw = -28
-	st.muted = true
-	step(2000)
-	assert.equal(r.state, 'frozen')
-	assert.equal(st.fader, moved)
-	st.muted = false
-	set.quietMode = 'drift'
-	set.quietDriftAfterMs = 1000
-	set.driftRateDbPerS = 10
-	st.raw = null
-	step(3000)
-	assert.ok(Math.abs(st.fader!) < 0.05, `drifted back to the set point: ${st.fader}`)
-})
-
-test('moving the fader by hand: new target, pause, or rider off', () => {
-	const a = rig()
-	a.step(1000)
-	a.r.captureTarget()
-	const t0 = a.rec.target!
-	a.r.manualMove(0, -5)
-	assert.ok(Math.abs(a.rec.target! - (t0 - 5)) < 1e-9)
-	assert.equal(a.rec.refGain, -5)
-
-	const b = rig({ grab: 'pause', grabPauseMs: 2000 })
-	b.step(1000)
-	b.r.captureTarget()
-	b.st.raw = -30
-	b.r.manualMove(0, 0)
-	b.step(1500)
-	assert.equal(b.st.fader, 0)
-	b.step(3000)
-	assert.ok(b.st.fader! > 0)
-
-	const c = rig({ grab: 'off' })
-	c.step(500)
-	c.r.captureTarget()
-	c.r.manualMove(0, 3)
-	assert.ok(c.st.offCalled)
-})
-
-test('calibrate sets the fader for a level, and the target with it', () => {
-	const { r, rec, st, step } = rig({ calibrateMove: 'jump', riderOn: false })
-	st.raw = -26
-	step(1000)
-	r.calibrate(-18)
-	assert.ok(Math.abs(st.fader! - 8) < 0.6, `fader ${st.fader}`)
-	assert.equal(rec.target, -18)
-})
-
-test('trim mode measures before the fader, so the fader is left alone', () => {
-	const { r, rec, st, step } = rig({ controlMode: 'trim' })
-	st.fader = -10
-	step(1000)
-	r.captureTarget()
-	assert.ok(Math.abs(rec.target! - -20) < 0.6, `target is pre-fader: ${rec.target}`)
-	st.raw = -26
-	step(5000)
-	assert.equal(st.fader, -10)
-	assert.ok(st.trim > 5.4 && st.trim < 6.6, `trim ${st.trim}`)
-})
-
-test('pickup: waits, catches after the dwell, releases on an outside move', async () => {
-	let desk = 64
-	let sent: number | undefined
-	const p = new PickupManager(
-		() => desk,
-		() => {},
-	)
-	const s = { band: 3, dwellMs: 100, releaseBand: 6, releaseMs: 0 }
-	assert.equal(p.handle('a', 20, s, (x) => (sent = x)), false)
-	assert.equal(p.ledState('a', 20).led, 'below')
-	assert.equal(p.handle('a', 63, s, (x) => (sent = x)), false)
-	assert.equal(p.ledState('a', 63).led, 'catch')
-	await sleep(150)
-	assert.equal(sent, 63)
-	desk = 63
-	assert.equal(p.handle('a', 90, s, (x) => (sent = x)), true) // latched: follows anything
-	desk = 90
-	desk = 30 // someone moved OBS
-	p.tick()
-	assert.equal(p.ledState('a', 90).led, 'above')
-	p.destroy()
-})
-
-test('gestures: press, double tap, hold', async () => {
-	const got: Gesture[] = []
-	const g = new GestureReader(
-		() => ({ doubleTapMs: 120, holdMs: 200 }),
-		(_k, x) => got.push(x),
-	)
-	g.down('a')
-	g.up('a')
-	await sleep(160)
-	g.down('a')
-	g.up('a')
-	g.down('a')
-	g.up('a')
-	await sleep(160)
-	g.down('a')
-	await sleep(260)
-	g.up('a')
-	await sleep(160)
-	assert.deepEqual(got, ['press', 'double', 'hold'])
-	g.destroy()
-})
-
-test('store: unknown or bad values are dropped, import picks parts', () => {
-	const s = loadStore(JSON.stringify({ defaults: { bandDb: 'x', rideRateDbPerS: 5 }, page: { layout: 'rows' }, inputs: { Mic: { overrides: { measure: 'peak', nonsense: 1 }, target: -20 } } }))
-	assert.equal(s.defaults.bandDb, INPUT_DEFAULTS.bandDb)
-	assert.equal(s.defaults.rideRateDbPerS, 5)
-	assert.equal(s.page.layout, 'rows')
-	assert.deepEqual(s.inputs.Mic.overrides, { measure: 'peak' })
-	const t = newStore()
-	applyImport(t, s, ['input:Mic'])
-	assert.equal(t.inputs.Mic.target, -20)
-	assert.equal(t.page.layout, 'strips')
-})
-
-test('end to end against a pretend OBS: inputs, rider, trim, web page, import', async () => {
+test('end to end against a pretend OBS: inputs, auto level, trim, web page, import', async () => {
 	const obs = new FakeObs('secret')
 	obs.addInput('Mic', -24)
 	obs.addInput('Music', -12)
 	obs.addInput('Camera', null, false)
 	const logs: string[] = []
 	let saved = ''
-	const engine = new Engine(
+	const engine = obsEngine(
 		{
 			log: (l, m) => logs.push(`${l}: ${m}`),
 			save: (s) => (saved = s),
@@ -245,23 +29,22 @@ test('end to end against a pretend OBS: inputs, rider, trim, web page, import', 
 			stateChanged: () => {},
 		},
 		undefined,
-		'',
 	)
-	engine.connect('127.0.0.1', obs.port, 'secret')
+	engine.useDevice(new ObsDevice({ host: '127.0.0.1', port: obs.port, password: 'secret' }))
 	for (let i = 0; i < 50 && engine.visible().length < 2; i++) await sleep(50)
 	assert.deepEqual(
 		engine.visible().map((i) => i.name),
 		['Mic', 'Music'],
 	)
-	assert.equal(engine.versions.obsVersion, '31.0.2')
+	assert.equal(engine.versions.deviceVersion, '31.0.2')
 
-	// rider on Mic, fader mode
+	// auto level on Mic, fader mode
 	engine.setDefaultSetting('measureWindowMs', 500)
 	engine.setDefaultSetting('rideRateDbPerS', 10)
 	engine.setDefaultSetting('captureMode', 'instant')
 	const mic = engine.resolve('Mic')!
 	await sleep(800)
-	engine.setInputSetting('Mic', 'riderOn', true)
+	engine.setInputSetting('Mic', 'autoLevelOn', true)
 	engine.captureTarget(mic)
 	const target = engine.store.inputs.Mic.target!
 	assert.ok(Math.abs(target - -24) < 1, `target ${target}`)
@@ -272,7 +55,7 @@ test('end to end against a pretend OBS: inputs, rider, trim, web page, import', 
 
 	// trim mode on Music: the Gain filter is added and ridden; the fader isn't touched
 	engine.setInputSetting('Music', 'controlMode', 'trim')
-	engine.setInputSetting('Music', 'riderOn', true)
+	engine.setInputSetting('Music', 'autoLevelOn', true)
 	await sleep(700)
 	engine.captureTarget(engine.resolve('Music')!)
 	obs.input('Music').signalDb = -18
@@ -289,13 +72,14 @@ test('end to end against a pretend OBS: inputs, rider, trim, web page, import', 
 	const base = `http://127.0.0.1:${web.port}`
 	const page = await (await fetch(base + '/')).text()
 	assert.ok(page.includes('OBS AUDIO'))
+	assert.ok(page.includes('<title>OBS Audio</title>'))
 	assert.equal((await fetch(base + '/events')).status, 401)
 	const post = (c: object) => fetch(base + '/cmd?pin=1234', { method: 'POST', body: JSON.stringify(c) }).then((r) => r.json() as Promise<{ ok: boolean; message?: string }>)
 	assert.equal((await post({ cmd: 'mute', input: 'Music', value: true })).ok, true)
 	await sleep(100)
 	assert.equal(obs.input('Music').muted, true)
-	assert.equal((await post({ cmd: 'filterAdd', input: 'Mic', kind: 'compressor_filter' })).ok, true)
-	assert.equal((await post({ cmd: 'filterAdd', input: 'Mic', kind: 'noise_suppress_filter' })).ok, true)
+	assert.equal((await post({ cmd: 'blockAdd', input: 'Mic', kind: 'compressor_filter' })).ok, true)
+	assert.equal((await post({ cmd: 'blockAdd', input: 'Mic', kind: 'noise_suppress_filter' })).ok, true)
 	await sleep(100)
 	assert.deepEqual(
 		obs.input('Mic').filters.map((f) => [f.filterName, f.filterKind]),
@@ -304,10 +88,10 @@ test('end to end against a pretend OBS: inputs, rider, trim, web page, import', 
 			['Noise Suppression', 'noise_suppress_filter_v2'],
 		],
 	)
-	assert.equal((await post({ cmd: 'filterSet', input: 'Mic', filter: 'Compressor', key: 'ratio', value: 4 })).ok, true)
+	assert.equal((await post({ cmd: 'blockSet', input: 'Mic', block: 'Compressor', key: 'ratio', value: 4 })).ok, true)
 	await sleep(100)
 	assert.equal(obs.input('Mic').filters[0].filterSettings.ratio, 4)
-	assert.equal((await post({ cmd: 'track', input: 'Mic', track: '3', value: true })).ok, true)
+	assert.equal((await post({ cmd: 'routing', input: 'Mic', target: '3', value: true })).ok, true)
 	await sleep(100)
 	assert.equal(obs.input('Mic').tracks['3'], true)
 
@@ -344,25 +128,6 @@ test('end to end against a pretend OBS: inputs, rider, trim, web page, import', 
 	assert.ok(!logs.some((l) => l.startsWith('error')), logs.join('\n'))
 })
 
-test('version compare and update flags', () => {
-	assert.equal(compareVersions('0.1.0', '0.1.0'), 0)
-	assert.equal(compareVersions('v0.2.0', '0.1.9'), 1)
-	assert.equal(compareVersions('31.0.2', '31.1.0'), -1)
-	assert.equal(compareVersions('1.0.0-beta', '1.0.0'), 0)
-	const v = newVersionInfo('0.1.0')
-	v.moduleLatest = '0.1.1'
-	v.obsVersion = '31.0.2'
-	v.obsLatest = '31.0.2'
-	recompute(v)
-	assert.equal(v.moduleUpdate, true)
-	assert.equal(v.obsUpdate, false)
-})
-
-test('newest module release includes pre-releases, skips drafts', () => {
-	assert.equal(pickNewest([{ tag_name: 'v0.1.1' }, { tag_name: 'v0.2.0', draft: true }, { tag_name: 'v0.1.3' }]), '0.1.3')
-	assert.equal(pickNewest([]), null)
-})
-
 test('connection errors are explained in plain words', () => {
 	assert.match(explainClose(4009, '', 'h', 4455, false), /password is wrong/)
 	assert.match(explainClose(1006, '', '10.0.0.5', 4455, false), /Enable WebSocket server/)
@@ -375,8 +140,8 @@ test('PFL, solo, backup switch and recording against a pretend OBS', async () =>
 	obs.addInput('Mic Backup', -24)
 	obs.addInput('Music', -12)
 	const logs: string[] = []
-	const engine = new Engine({ log: (l, m) => logs.push(`${l}: ${m}`), save: () => {}, structureChanged: () => {}, stateChanged: () => {} }, undefined, '')
-	engine.connect('127.0.0.1', obs.port, '')
+	const engine = obsEngine({ log: (l, m) => logs.push(`${l}: ${m}`), save: () => {}, structureChanged: () => {}, stateChanged: () => {} }, undefined)
+	engine.useDevice(new ObsDevice({ host: '127.0.0.1', port: obs.port, password: '' }))
 	for (let i = 0; i < 50 && engine.visible().length < 3; i++) await sleep(50)
 	const mic = engine.resolve('Mic')!
 	const music = engine.resolve('Music')!
@@ -449,7 +214,7 @@ test('PFL, solo, backup switch and recording against a pretend OBS', async () =>
 	assert.ok(engine.recorder.countdown()! > 250)
 	await engine.noticeAction(due!.id, 'snooze')
 	assert.ok(!engine.notices.list.some((n) => n.kind === 'record-due'))
-	await engine.recorder.setFilenameFormat('Conf %CCYY-%MM-%DD')
+	await engine.recorder.setFileName('Conf %CCYY-%MM-%DD')
 	assert.equal(obs.rec.format, 'Conf %CCYY-%MM-%DD')
 	engine.recorder.setPlan(new Date(Date.now() - 1000).toISOString(), true)
 	await sleep(1300)
@@ -459,4 +224,64 @@ test('PFL, solo, backup switch and recording against a pretend OBS', async () =>
 	engine.destroy()
 	obs.close()
 	assert.ok(!logs.some((l) => l.startsWith('error')), logs.join('\n'))
+})
+
+test('upgrade script: rider actions, feedbacks, settings and variables become auto level', () => {
+	const ev = (value: unknown, isExpression = false) => ({ value, isExpression }) as never
+	const actions: CompanionMigrationAction[] = [
+		{ id: 'a1', controlId: 'c1', actionId: 'ag_rider', options: { input: ev('1'), mode: ev('toggle') } },
+		{ id: 'a2', controlId: 'c1', actionId: 'rider_all', options: { mode: ev('on') } },
+		{ id: 'a3', controlId: 'c2', actionId: 'ag_setting', options: { scope: ev('input'), input: ev('Mic'), key: ev('riderOn'), value: ev('$(OBS_Audio:in2_rider_on)') } },
+		{ id: 'a4', controlId: 'c2', actionId: 'ag_setting', options: { scope: ev('input'), input: ev('Mic'), key: ev('bandDb'), value: ev('3') } },
+		{ id: 'a5', controlId: 'c3', actionId: 'mute', options: { input: ev('1'), mode: ev('toggle') } },
+		{ id: 'a6', controlId: 'c3', actionId: 'volume', options: { input: ev("$(OBS_Audio:in1_rider) == 'riding' ? 1 : 2", true), mode: ev('set') } },
+		// options stored without the {value} wrapper (older Companion), just in case
+		{ id: 'a7', controlId: 'c4', actionId: 'ag_setting', options: { key: 'riderOn' as never, value: 'on' as never } },
+	]
+	const feedbacks: CompanionMigrationFeedback[] = [
+		{ id: 'f1', controlId: 'c1', feedbackId: 'rider_status', options: { input: ev('1'), c_riding: ev('#0077aa') } },
+		{ id: 'f2', controlId: 'c1', feedbackId: 'rider_on', options: { input: ev('2') } },
+		{ id: 'f3', controlId: 'c1', feedbackId: 'muted', options: { input: ev('2') } },
+	]
+	const r = upgradeRiderToAutoLevel({ currentConfig: {} as never }, { config: null, secrets: null, actions, feedbacks })
+	assert.equal(r.updatedConfig, null)
+	const byId = Object.fromEntries(r.updatedActions.map((a) => [a.id, a]))
+	assert.deepEqual(Object.keys(byId).sort(), ['a1', 'a2', 'a3', 'a6', 'a7'])
+	assert.equal(byId.a1.actionId, 'ag_auto_level')
+	assert.deepEqual(byId.a1.options.mode, { value: 'toggle', isExpression: false })
+	assert.equal(byId.a2.actionId, 'auto_level_all')
+	assert.equal(byId.a3.actionId, 'ag_setting')
+	assert.deepEqual(byId.a3.options.key, { value: 'autoLevelOn', isExpression: false })
+	assert.deepEqual(byId.a3.options.value, { value: '$(OBS_Audio:in2_auto_level_on)', isExpression: false })
+	assert.deepEqual(byId.a6.options.input, { value: "$(OBS_Audio:in1_auto_level) == 'riding' ? 1 : 2", isExpression: true })
+	assert.equal(byId.a7.options.key, 'autoLevelOn')
+	assert.deepEqual(r.updatedFeedbacks.map((f) => [f.id, f.feedbackId]), [
+		['f1', 'auto_level_status'],
+		['f2', 'auto_level_on'],
+	])
+	assert.deepEqual(r.updatedFeedbacks[0].options.c_riding, { value: '#0077aa', isExpression: false })
+	// running it again changes nothing
+	const again = upgradeRiderToAutoLevel({ currentConfig: {} as never }, { config: null, secrets: null, actions, feedbacks })
+	assert.equal(again.updatedActions.length + again.updatedFeedbacks.length, 0)
+	assert.equal(renameVariables('$(x:in12_rider) $(x:in3_rider_on) rider in1_riderx'), '$(x:in12_auto_level) $(x:in3_auto_level_on) rider in1_riderx')
+})
+
+test('a 0.1.x settings store (rider) loads into the 0.2 engine, OBS fields kept', () => {
+	const old = JSON.stringify({
+		version: 1,
+		defaults: { ...INPUT_DEFAULTS, riderOn: false, trimFilterName: 'My trim' },
+		sections: [{ id: 'input', name: 'Input', controls: ['trim', 'sync', 'compressor_filter'], mode: 'open' }, { id: 'tracks', name: 'Tracks', controls: ['tracks'], mode: 'collapsible' }],
+		inputs: { Mic: { overrides: { riderOn: true, controlMode: 'trim' }, sections: {}, target: -20, refGain: 2 } },
+	})
+	const engine = obsEngine({ log: () => {}, save: () => {}, structureChanged: () => {}, stateChanged: () => {} }, old)
+	assert.equal(engine.settings('Mic').autoLevelOn, true)
+	assert.equal(engine.settings('Mic').controlMode, 'trim')
+	assert.equal(engine.settings('Mic').trimFilterName, 'My trim')
+	assert.equal(engine.settings('Other').autoLevelOn, false)
+	assert.equal(engine.store.inputs.Mic.target, -20)
+	assert.deepEqual(engine.store.sections[0].controls, ['trim', 'delay', 'compressor_filter'])
+	assert.deepEqual(engine.store.sections[1].controls, ['routing'])
+	assert.equal(engine.store.version, 2)
+	assert.ok(!JSON.stringify(engine.store).includes('riderOn'))
+	engine.destroy()
 })
