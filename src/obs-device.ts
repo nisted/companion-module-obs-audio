@@ -147,6 +147,11 @@ export class ObsDevice implements Device {
 			setFolder: (dir) => this.#do('SetRecordDirectory', { recordDirectory: dir }),
 			/** OBS's file name format, e.g. 'Conference %CCYY-%MM-%DD %hh-%mm-%ss' */
 			setFileName: (format) => this.#do('SetProfileParameter', { parameterCategory: 'Output', parameterName: 'FilenameFormatting', parameterValue: format }),
+			/**
+			 * A plain name for the next take (sheet naming). OBS reads its file name setting as a format, so a % in
+			 * a sheet value would be taken for one of its date codes: those become _ here.
+			 */
+			setTakeName: (name) => this.#do('SetProfileParameter', { parameterCategory: 'Output', parameterName: 'FilenameFormatting', parameterValue: name.replace(/%/g, '_') }),
 		}
 	}
 

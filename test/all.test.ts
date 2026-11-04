@@ -285,3 +285,49 @@ test('a 0.1.x settings store (rider) loads into the 0.2 engine, OBS fields kept'
 	assert.ok(!JSON.stringify(engine.store).includes('riderOn'))
 	engine.destroy()
 })
+
+test('recordings against a pretend OBS: start names the take from the sheet, stop renames and queues the upload', async (t) => {
+	const { mkdtempSync, existsSync, readdirSync } = await import('node:fs')
+	const { tmpdir } = await import('node:os')
+	const { join } = await import('node:path')
+	const dir = mkdtempSync(join(tmpdir(), 'obs-rec-'))
+	const obs = new FakeObs('')
+	obs.addInput('Mic', -24)
+	obs.rec.directory = dir
+	obs.writeFiles = true
+	const sent: string[] = []
+	const fake = { upload: async (job: { remoteFolder: string; remoteName: string }) => (sent.push(`${job.remoteFolder}/${job.remoteName}`), { remote: 'x' }) }
+	const engine = new Engine(
+		{ log: () => {}, save: () => {}, structureChanged: () => {}, stateChanged: () => {} },
+		OBS_INFO,
+		{ ...obsEngineOptions(), sourceName: 'OBS Main', recordings: { transports: { rclone: fake, share: fake, http: fake, webdav: fake } } },
+		undefined,
+		'',
+	)
+	t.after(() => (engine.destroy(), obs.close()))
+	engine.useDevice(new ObsDevice({ host: '127.0.0.1', port: obs.port, password: '' }))
+	for (let i = 0; i < 60 && engine.recorder.state.directory !== dir; i++) await sleep(50)
+	assert.equal(engine.recorder.state.directory, dir, 'recording folder read from OBS')
+	const r = engine.recordings
+	r.configure({
+		naming: { parts: ['Session', 'source'] },
+		rename: { stablePollMs: 5, stableChecks: 1 },
+		upload: { enabled: true, layout: 'fixed', folder: 'Shows', destinations: [{ id: 'd', kind: 'rclone', name: 'Drive', enabled: true, remote: 'gdrive:' } as never] },
+	})
+	r.loadSheetFile(new TextEncoder().encode('Session\nKeynote 100%\nPanel\n'), 'rows.csv')
+	r.setEnabled(true)
+
+	await engine.recorder.start()
+	for (let i = 0; i < 40 && !obs.rec.active; i++) await sleep(25)
+	assert.equal(obs.takeName, 'Keynote 100_ - OBS Main', "the take is named from the row (OBS's % codes made safe)")
+	for (let i = 0; i < 40 && obs.rec.format !== '%CCYY-%MM-%DD %hh-%mm-%ss'; i++) await sleep(25)
+	assert.equal(obs.rec.format, '%CCYY-%MM-%DD %hh-%mm-%ss', "OBS's own file name setting is put back once the take is rolling")
+
+	r.rowNext()
+	await engine.recorder.stop()
+	for (let i = 0; i < 80 && !existsSync(join(dir, 'Panel - OBS Main.mkv')); i++) await sleep(25)
+	assert.ok(existsSync(join(dir, 'Panel - OBS Main.mkv')), `renamed after stop: ${readdirSync(dir)}`)
+	for (let i = 0; i < 80 && !sent.length; i++) await sleep(25)
+	assert.deepEqual(sent, ['Shows/Panel - OBS Main.mkv'], 'upload queued and sent')
+	assert.equal(r.variableValues().rec_last_name, 'Panel - OBS Main.mkv')
+})

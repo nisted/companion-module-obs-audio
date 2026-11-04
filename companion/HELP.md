@@ -7,8 +7,9 @@ A proper audio desk for OBS Studio. Here's what's in the box:
 - PFL and solo on OBS's monitoring
 - automatic switching to backup feeds
 - recording control with a planned restart
+- recordings named from a spreadsheet, a file manager, and uploads to the cloud or a NAS
 - OBS's own processing filters and recording tracks
-- a fader and meter page in any browser, or as an OBS dock
+- a fader and meter page in any browser, or as an OBS dock, that can pull in strips from your other OBS Audio and ATEM Audio connections
 
 It's happy to share. Run it alongside the official OBS module and both can be connected to OBS at once.
 
@@ -68,10 +69,41 @@ Every page setting lives in **⚙ Settings**, a floating panel you can drag out 
 - layout, colours and meters
 - tooltips on or off
 - tip of the day on or off
+- the look (below)
+
+#### The look
+
+The faders have proper desk-style caps now: chunky, with a bright line across the middle and a shadow, so you can find them from across the room. In **Settings → Page** (or with **Fader page: change a setting**):
+
+- **Fader cap colour** (`capColour`) and **Fader cap centre line** (`capLineColour`): any colour you like. Purple is the correct answer, but it's your desk.
+- **Fader dB scale** (`faderScaleSide`): `left` or `right` of the fader.
+- **Meter dB scale** (`meterScaleSide`): `left` or `right` of the meters. Set separately, so mix and match.
+- **Faint colours behind the meters** (`meterPaleBack`, true / false) and **How faint** (`meterPaleStrength`, 0 to 1): the unlit part of each meter shows its green, yellow and red zones, faintly, so you can see where you're heading before you get there.
+
+Odd values (a colour that isn't a colour, a side that's neither left nor right) are skipped, and the setting stays as it was.
 
 Sections are yours to arrange however you like. In **Settings → Sections**, add, rename and reorder them, and choose what goes in each and whether each is hidden, always open or collapsible. **Settings → Inputs** overrides that per input, and orders or hides inputs.
 
 **Settings → Export / import** exports the lot. On import, tick what to bring in. The settings in use are kept as an autosave first, so if an import goes sideways you can roll it back.
+
+### Joining pages: one page, every desk
+
+Got more than one OBS, or an ATEM next to it? Any OBS Audio or ATEM Audio page can pull in strips from the others, on this computer or anywhere on the network. Press **SOURCES** in the header.
+
+- **Found on the network:** every OBS Audio and ATEM Audio connection with its finder on turns up here within a few seconds. Tick one and its strips appear.
+- **Add by address:** on another subnet or a VPN, or its finder's off? Type its page address (as in its `page_url` variable, e.g. `192.168.1.20:8890`).
+- **PIN:** if a source has a PIN, you're asked once. This browser remembers it until it stops working (it changed), then asks again.
+- **Colour tag:** each source gets a colour, so you know whose strip is whose. Change it with the swatch.
+- **Remove:** ✕ takes a source off this page. Its own page carries on as normal.
+
+Two ways to lay it out:
+
+- **Grouped by source:** each source gets its own labelled block in its colour. Move blocks with ◀ ▶, fold one away with ▾.
+- **Free arrangement:** any strip, from any source, anywhere. Grab the ⠿ by a strip's name and drag it. Each strip wears a little tag saying where it's from.
+
+The layout, colours, PINs and arrangement are remembered in this browser, so a phone and the laptop can each have their own. Every control on a joined strip works that strip's own desk (it talks straight to that connection). Grid faders stay with their own connection, so the joined page doesn't move them.
+
+**On the connection page:** **Let other pages find this one** (on unless you say otherwise) and **Page finder port** (UDP, default 48999). Every connection that should find the others needs the same port. Several connections on one computer can share it. Switch the finder off and pages can still join by address; the PIN applies either way. If nothing turns up, the network may be blocking broadcasts: add by address instead.
 
 ### PFL and solo
 
@@ -98,7 +130,61 @@ Every threshold and time is a setting, so tune away.
 - **● REC** in the header starts OBS recording. Press it while recording and it asks "Stop recording?", then "Are you definitely sure?". (Belt and braces. 🎙️)
 - After stopping, it asks when recording is due to restart, with an option to start automatically. Skip leaves it stopped.
 - A planned start shows as a countdown in the header. If it isn't automatic, a big **Start recording?** pop-up appears 10 minutes before (that's a setting), offering Start, Snooze, Set a new time and Dismiss. Nothing blocks the page.
-- **Settings → Recording** sets OBS's recording folder and file name format (put a prefix before OBS's date codes). It also shows the last file, and how many recordings are in the folder when OBS is on this computer.
+- **Settings → Record** sets OBS's recording folder and file name format (put a prefix before OBS's date codes). It also shows the last file, and how many recordings are in the folder when OBS is on this computer.
+
+### Recordings: names from a spreadsheet, a file manager and uploads
+
+**Settings → Recordings** is where your recordings live. It works with any joined source too: pick it from **Source** at the top.
+
+**Files.** Every recording in OBS's folder, newest first, with its size and length. Each one has:
+
+- **▶ PLAY:** a look (or a listen) right there in the browser. MP4 and MOV play pretty much everywhere; MKV in Chrome; FLV and TS not at all, so download those.
+- **⤓:** download a copy.
+- **RENAME:** a new name. It keeps its real ending, so typing `final.mov` on an MP4 gives `final.mov.mp4` (it still plays).
+- **UPLOAD:** send this one now, whatever the upload timing says.
+- **✕:** delete. It asks "Are you sure?" first, and there's no bin, so mean it.
+
+The file being recorded can't be renamed or deleted until it's stopped.
+
+**Sheet source.** Where the names come from:
+
+- **Google Sheet:** paste the link from your browser. The sheet must be shared **Anyone with the link can view** (or published to the web). Private sheets that need a Google sign-in can't be read yet: download it as CSV and drop that in instead. Edits turn up every 30 seconds (that's a setting), and **Read it now** doesn't wait.
+- **CSV / Excel file:** drop a `.csv` or `.xlsx` on the page. It's kept in the module, so names still work after a restart.
+
+The first row holds the column names (or pick another row). If the sheet can't be reached, the last good copy keeps working.
+
+**Naming.** Pick what goes in the name, in order: sheet columns, the date, the time, the connection's name, a take number, the row number, some text or a value from Companion. Choose what goes between them, how the date and time look, and what happens when a name's already taken (add (2), or a take number). The preview shows what the live row gives you. Fancy writing the pattern yourself? `{Session} - {Speaker} {date}` works too.
+
+**Sheet row.** Which row is live, and why. Tap a row to make it live, or use **◀ PREVIOUS** / **NEXT ▶**. Also:
+
+- **Next row after each recording:** steps on by itself when a take stops. Back-to-back sessions, sorted.
+- **Match by time:** with start and end time columns, the row whose times cover now goes live by itself. A tap overrides it until the next slot (or until you press **RELEASE**: your choice).
+- **Key column:** a column of codes (K1, P2...) so Companion can set the row by code.
+
+**What happens on a take.** Just before OBS starts recording (from Companion, the page or a planned start), OBS is given the name from the live row. Once it's rolling, OBS's own file name setting goes back to how it was. If you move to another row during the take, the file is renamed after stop. Started in OBS itself? I still spot it and rename it after stop. Sheet naming has an on/off switch, and while it's off OBS names its files as it always has.
+
+**Upload.** Where to, when, and which folders:
+
+- **Where:** Google Drive, Dropbox, OneDrive or anything else rclone knows; a network share or NAS (already connected); FTP or SFTP; WebDAV; or a web address (HTTP POST or PUT). Add as many as you like, each with its own login. Each file goes to each one that's on.
+- **When:** after each recording stops (queued, and retried if the network drops); only when asked; or at a set time each day.
+- **Folders:** one fixed folder; a folder with one per day inside it; or a pattern from sheet columns and the date, like `{Event}/{date}`.
+- The upload is a copy. The recording stays put on this computer.
+
+**rclone.** Google Drive, Dropbox, OneDrive, FTP and SFTP go through [rclone](https://rclone.org/downloads/), the same as Companion Sync, and it needs installing on the computer Companion runs on (Mac: `brew install rclone`; Windows: `winget install Rclone.Rclone`; Pi: `sudo -v ; curl https://rclone.org/install.sh | sudo bash`). Then set up a remote with `rclone config` and put its name in the destination (`gdrive:Shows`, say). If it's missing, the page tells you.
+
+**Upload queue.** Everything waiting, going, done or failed, with progress. **UPLOAD NOW**, **RETRY FAILED**, **CLEAR DONE**, or retry and remove one at a time.
+
+**OBS on another computer?** The file manager, renaming and uploads need to see OBS's recording folder. Mount it here and put that path in **Upload → Recordings folder as this computer sees it**.
+
+From Companion:
+
+- **Recordings: sheet row**: next, previous, set (by number or key-column value, variables welcome) or release
+- **Recordings: upload now / retry failed / clear done**
+- **Recordings: read the Google Sheet again now**
+- **Recordings: sheet naming and uploads on / off**
+- **Recordings: set a value for the name**: gives the name a value from a variable or expression, used as `{var:name}`
+- feedbacks: **an upload has failed**, **uploading**, **a manual row pick is overriding the time match**, **the sheet can't be read**
+- presets in **Recordings**: previous / next row, release, next take name, upload now, retry, read the sheet
 
 ### Auto gain
 
@@ -175,6 +261,8 @@ Overall:
 - `page_url`
 - `obs_error`
 - recording: `rec_state`, `rec_time`, `rec_next`, `rec_countdown`, `rec_auto`, `rec_folder`, `rec_files`
+- recordings: `rec_naming`, `rec_row`, `rec_rows`, `rec_row_why`, `rec_override`, `rec_next_name`, `rec_last_name`, `rec_last_note`, `rec_sheet`, `rec_sheet_error`, upload counts `rec_up_waiting`, `rec_up_uploading`, `rec_up_done`, `rec_up_failed`, and `rec_up_active`
+- the live row's columns used in the name (or as the key): `rec_col_<column>`, e.g. `rec_col_session`
 - `solo`
 - `notices`
 

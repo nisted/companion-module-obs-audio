@@ -19,7 +19,7 @@ import {
 import { networkInterfaces } from 'node:os'
 import { spawn } from 'node:child_process'
 import { Engine, type InputInfo, type UserChange } from '../core/src/engine.js'
-import { WebServer } from '../core/src/web.js'
+import { WebServer, BEACON_PORT } from '../core/src/web.js'
 import { type Db, fmtDb, parseDb, parseNumber, positionToDb, clamp, MIN_DB } from '../core/src/law.js'
 import { PAGE_DEFAULTS, type PageSettings } from '../core/src/settings.js'
 import { AUTOLEVEL_STATES, type AutoLevelState } from '../core/src/autolevel.js'
@@ -42,6 +42,8 @@ interface Config extends JsonObject {
 	webPort: string | number
 	webBind: string
 	pin: string
+	finderOn: boolean
+	finderPort: string | number
 	varRateHz: string | number
 	updateHours: string | number
 	gridBand: string | number
@@ -67,6 +69,7 @@ interface Resolved {
 	webPort: number
 	bind: string
 	pin: string
+	finderPort: number
 	varRateHz: number
 	updateHours: number
 	grid: { band: number; dwellMs: number; releaseBand: number; releaseMs: number }
@@ -80,6 +83,7 @@ const CONN_FIELDS = [
 	'webPort',
 	'webBind',
 	'pin',
+	'finderPort',
 	'varRateHz',
 	'updateHours',
 	'gridBand',
@@ -96,6 +100,7 @@ const CONN_LABELS: Record<ConnField, string> = {
 	webPort: 'Fader page port (default 8890, 0 = off)',
 	webBind: 'Fader page available on',
 	pin: 'Fader page PIN (blank = none)',
+	finderPort: `Page finder port (UDP, default ${BEACON_PORT}, 0 = off)`,
 	varRateHz: 'Meter variables: updates per second (default 5)',
 	updateHours: 'Check for module and OBS updates every (hours, default 12, 0 = never)',
 	gridBand: `Catch band (± fader steps of 127, default ${DEFAULT_BAND})`,
@@ -109,12 +114,13 @@ const BY_ACTION_TIP =
 	"While it's ticked the field's locked here and shows what the action last set. Untick it and you get back what you'd typed before."
 
 /** The connection fields that hold a number */
-const NUMBER_FIELDS = new Set<ConnField>(['port', 'webPort', 'varRateHz', 'updateHours', 'gridBand', 'gridDwellMs', 'gridReleaseBand', 'gridReleaseMs'])
+const NUMBER_FIELDS = new Set<ConnField>(['port', 'webPort', 'finderPort', 'varRateHz', 'updateHours', 'gridBand', 'gridDwellMs', 'gridReleaseBand', 'gridReleaseMs'])
 
 /** Allowed whole-number range for each number field (the same limits used when the connection is applied) */
 const NUMBER_RANGES: Record<string, [number, number]> = {
 	port: [1, 65535],
 	webPort: [0, 65535],
+	finderPort: [0, 65535],
 	varRateHz: [1, 20],
 	updateHours: [0, 720],
 	gridBand: [0, 64],
@@ -195,6 +201,8 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 
 	#resolved: Resolved | null = null
 	#recordingActions = false
+	/** Values for {var:name} in recording names, set by 'Recordings: set a value for the name' */
+	#nameVars: Record<string, string> = {}
 	/** Connection fields we've already moaned about having a variable in them */
 	#varWarned = new Set<string>()
 
@@ -253,6 +261,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			webPort: parseNumber(f('webPort'), 8890, 0, 65535),
 			bind: bindAddress(f('webBind')),
 			pin: f('pin'),
+			finderPort: this.config.finderOn === false ? 0 : parseNumber(f('finderPort'), BEACON_PORT, 0, 65535),
 			varRateHz: parseNumber(f('varRateHz'), 5, 1, 20),
 			updateHours: parseNumber(f('updateHours'), 12, 0, 720),
 			grid: {
@@ -268,11 +277,16 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			this.updateStatus(InstanceStatus.Connecting)
 			this.engine.useDevice(new ObsDevice({ host: r.host, port: Math.round(r.port), password: r.password }))
 		}
-		if (!old || old.webPort !== r.webPort || old.bind !== r.bind || old.pin !== r.pin) {
+		this.engine.sourceName = this.label
+		if (!old || old.webPort !== r.webPort || old.bind !== r.bind || old.pin !== r.pin || old.finderPort !== r.finderPort) {
 			this.web?.stop()
 			this.web = null
 			if (r.webPort > 0) {
-				this.web = new WebServer(this.engine, { port: Math.round(r.webPort), bind: r.bind, pin: r.pin }, (level, msg) => this.log(level, msg))
+				this.web = new WebServer(
+					this.engine,
+					{ port: Math.round(r.webPort), bind: r.bind, pin: r.pin, beacon: r.finderPort > 0 ? { port: Math.round(r.finderPort) } : undefined, name: () => this.label },
+					(level, msg) => this.log(level, msg),
+				)
 				this.web.start()
 			}
 			this.setVariableValues(this.#urlVariables())
@@ -524,7 +538,24 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				label: CONN_LABELS.pin,
 				width: 9,
 				default: '',
-				tooltip: 'Set one and the page asks for it before showing anything or letting anyone change things.',
+				tooltip: 'Set one and the page asks for it before showing anything or letting anyone change things. Pages joining this one ask for it once, then remember it.',
+			}),
+			{
+				type: 'checkbox',
+				id: 'finderOn',
+				label: 'Let other pages find this one',
+				width: 9,
+				default: true,
+				tooltip:
+					"Says hello on the network every few seconds so other OBS Audio and ATEM Audio pages can find this one and pull its strips in (and listens for theirs). Off: nothing's announced, but pages can still join by typing this page's address. The PIN still applies either way.",
+			},
+			...lock({
+				type: 'textinput',
+				id: 'finderPort',
+				label: CONN_LABELS.finderPort,
+				width: 9,
+				default: String(BEACON_PORT),
+				tooltip: `The UDP port pages say hello on. Every OBS Audio and ATEM Audio connection that should find each other needs the same one (${BEACON_PORT} unless you've a reason). Several connections on one computer can share it.`,
 			}),
 			...lock({
 				type: 'textinput',
@@ -661,6 +692,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			{ variableId: 'solo', name: 'Input being soloed' },
 			{ variableId: 'notices', name: 'Pop-ups waiting' },
 			{ variableId: 'notice', name: 'Latest pop-up' },
+			...this.engine.recordings.variableDefinitions(),
 		]
 		this.engine.visible().forEach((inp, idx) => {
 			const n = idx + 1
@@ -717,6 +749,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 			solo: this.engine.monitoring.solo ?? '',
 			notices: this.engine.notices.list.length,
 			notice: this.engine.notices.list.at(-1)?.title ?? '',
+			...this.engine.recordings.variableValues(),
 		}
 		this.engine.visible().forEach((inp, idx) => {
 			const p = `in${idx + 1}_`
@@ -790,7 +823,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 		})
 		Object.assign(v, this.#recordVariables())
 		this.setVariableValues(v)
-		this.checkFeedbacks('level_above', 'pickup_led', 'recording')
+		this.checkFeedbacks('level_above', 'pickup_led', 'recording', 'rec_upload_failed', 'rec_override')
 	}
 
 	// ---- actions ------------------------------------------------------------------
@@ -1417,6 +1450,119 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					await this.#setByAction(options)
 				},
 			},
+			rec_row: {
+				name: 'Recordings: sheet row (next / previous / set / release)',
+				description: 'Which spreadsheet row names the next recording. Release lets go of a manual pick when the rows are matched by time.',
+				options: [
+					{
+						type: 'dropdown',
+						label: 'Do',
+						id: 'op',
+						default: 'next',
+						choices: [
+							{ id: 'next', label: 'Next row' },
+							{ id: 'previous', label: 'Previous row' },
+							{ id: 'set', label: 'Set the row' },
+							{ id: 'release', label: 'Release (back to matching by time)' },
+						],
+					},
+					{
+						type: 'textinput',
+						label: 'Row',
+						id: 'value',
+						default: '1',
+						useVariables: true,
+						tooltip: 'A row number (1 = the first row under the column names), or a value from the key column (e.g. a session code). Can be a variable.',
+						isVisibleExpression: "$(options:op) == 'set'",
+					},
+					{
+						type: 'dropdown',
+						label: 'Look it up by',
+						id: 'how',
+						default: 'auto',
+						choices: [
+							{ id: 'auto', label: 'Key column first, then row number' },
+							{ id: 'key', label: 'Key column value' },
+							{ id: 'number', label: 'Row number' },
+						],
+						isVisibleExpression: "$(options:op) == 'set'",
+					},
+				],
+				callback: ({ options }) => {
+					const r = e.recordings
+					const op = String(options.op)
+					if (op === 'release') return r.rowRelease()
+					const ok = op === 'next' ? r.rowNext() : op === 'previous' ? r.rowPrevious() : r.rowSet(this.#text(options, 'value'), String(options.how ?? 'auto') as 'auto' | 'key' | 'number')
+					if (!ok) this.log('info', op === 'set' ? `Recordings: no sheet row "${this.#text(options, 'value')}", so the row stays as it was` : `Recordings: no ${op} row (or no sheet yet)`)
+				},
+			},
+			rec_upload: {
+				name: 'Recordings: upload now / retry failed / clear done',
+				options: [
+					{
+						type: 'dropdown',
+						label: 'Do',
+						id: 'op',
+						default: 'now',
+						choices: [
+							{ id: 'now', label: 'Upload everything waiting, now' },
+							{ id: 'retry', label: 'Retry the failed ones' },
+							{ id: 'clear', label: 'Clear finished uploads from the list' },
+						],
+					},
+				],
+				callback: ({ options }) => {
+					const r = e.recordings
+					if (options.op === 'retry') this.log('info', `Recordings: ${r.retryFailed()} upload(s) trying again`)
+					else if (options.op === 'clear') r.clearFinished(false)
+					else this.log('info', `Recordings: ${r.uploadNow(false)} file(s) on their way`)
+				},
+			},
+			rec_sheet_refresh: {
+				name: 'Recordings: read the Google Sheet again now',
+				options: [],
+				callback: async () => {
+					await e.recordings.refreshSheet()
+					const st = e.recordings.rec.sheet.status
+					if (st.error) this.log('warn', `Recordings: sheet: ${st.error}`)
+				},
+			},
+			rec_naming: {
+				name: 'Recordings: sheet naming and uploads on / off',
+				options: [
+					{
+						type: 'dropdown',
+						label: 'Set',
+						id: 'mode',
+						default: 'toggle',
+						choices: [
+							{ id: 'on', label: 'On' },
+							{ id: 'off', label: 'Off' },
+							{ id: 'toggle', label: 'Toggle' },
+						],
+					},
+				],
+				callback: ({ options }) => {
+					const on = options.mode === 'toggle' ? !e.recordings.enabled : options.mode === 'on'
+					e.recordings.setEnabled(on)
+				},
+			},
+			rec_name_value: {
+				name: 'Recordings: set a value for the name',
+				description: 'Gives the naming a value to use as {var:name}, e.g. from a Companion variable or expression. Takes effect on the next recording.',
+				options: [
+					{ type: 'textinput', label: 'Name (as in {var:name})', id: 'key', default: 'session', useVariables: true, tooltip: 'Letters, numbers and _ are safest' },
+					{ type: 'textinput', label: 'Value', id: 'value', default: '', useVariables: true, tooltip: 'Blank clears it. Can be a variable.' },
+				],
+				callback: ({ options }) => {
+					const key = this.#text(options, 'key')
+					if (!key) return this.log('info', 'Recordings: set a value for the name: no name given, so nothing set')
+					const v = this.#text(options, 'value')
+					if (v === '') delete this.#nameVars[key]
+					else this.#nameVars[key] = v
+					e.recordings.setVars({ ...this.#nameVars })
+				},
+			},
 			refresh: {
 				name: 'Re-read everything from OBS',
 				options: [],
@@ -1499,6 +1645,40 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 					if (fb.options.state === 'stopped') return !r.active
 					if (fb.options.state === 'due') return !r.active && !!e.store.record.nextStart
 					return r.active
+				},
+			},
+			rec_upload_failed: {
+				type: 'boolean',
+				name: 'Recordings: an upload has failed',
+				defaultStyle: { bgcolor: rgb(200, 0, 0), color: rgb(255, 255, 255) },
+				options: [],
+				callback: () => e.recordings.uploadFailed,
+			},
+			rec_uploading: {
+				type: 'boolean',
+				name: 'Recordings: uploading or waiting to upload',
+				defaultStyle: { bgcolor: rgb(85, 0, 170), color: rgb(255, 255, 255) },
+				options: [],
+				callback: () => {
+					const s = e.recordings.rec.uploads.summary()
+					return s.uploading + s.queued + s.retrying > 0
+				},
+			},
+			rec_override: {
+				type: 'boolean',
+				name: 'Recordings: a manual row pick is overriding the time match',
+				defaultStyle: { bgcolor: rgb(200, 100, 0), color: rgb(255, 255, 255) },
+				options: [],
+				callback: () => e.recordings.overrideActive,
+			},
+			rec_sheet_problem: {
+				type: 'boolean',
+				name: "Recordings: the sheet can't be read",
+				defaultStyle: { bgcolor: rgb(200, 100, 0), color: rgb(255, 255, 255) },
+				options: [],
+				callback: () => {
+					const st = e.recordings.rec.sheet.status
+					return st.kind !== 'none' && !!st.error
 				},
 			},
 			notice_active: {
@@ -1720,6 +1900,24 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 		])
 		button('notices', 'Pop-ups waiting (press to dismiss all)', 'POP-UPS\\n$(' + L + ':notices)', [{ actionId: 'notices_dismiss', options: {} }], [
 			{ feedbackId: 'notice_active', options: {}, style: { bgcolor: rgb(200, 100, 0) } },
+		])
+
+		section('recordings', 'Recordings (sheet naming and uploads)')
+		button('rec_row_prev', 'Previous sheet row', 'ROW\n◀\n$(' + L + ':rec_row)', [{ actionId: 'rec_row', options: { op: 'previous', value: '1', how: 'auto' } }])
+		button('rec_row_next', 'Next sheet row', 'ROW\n▶\n$(' + L + ':rec_row)', [{ actionId: 'rec_row', options: { op: 'next', value: '1', how: 'auto' } }])
+		button('rec_row_release', 'Release the manual row pick (back to time matching)', 'ROW\nRELEASE', [{ actionId: 'rec_row', options: { op: 'release', value: '1', how: 'auto' } }], [
+			{ feedbackId: 'rec_override', options: {}, style: { bgcolor: rgb(200, 100, 0) } },
+		])
+		button('rec_next_name', 'Next take name', 'NEXT:\n$(' + L + ':rec_next_name)', [], [{ feedbackId: 'rec_sheet_problem', options: {}, style: { bgcolor: rgb(200, 100, 0) } }])
+		button('rec_upload_now', 'Upload now', 'UPLOAD\n$(' + L + ':rec_up_waiting) waiting', [{ actionId: 'rec_upload', options: { op: 'now' } }], [
+			{ feedbackId: 'rec_uploading', options: {}, style: { bgcolor: purple } },
+			{ feedbackId: 'rec_upload_failed', options: {}, style: { bgcolor: rgb(200, 0, 0) } },
+		])
+		button('rec_upload_retry', 'Retry failed uploads', 'RETRY\n$(' + L + ':rec_up_failed) failed', [{ actionId: 'rec_upload', options: { op: 'retry' } }], [
+			{ feedbackId: 'rec_upload_failed', options: {}, style: { bgcolor: rgb(200, 0, 0) } },
+		])
+		button('rec_sheet_refresh', 'Read the sheet again', 'SHEET\n$(' + L + ':rec_sheet)', [{ actionId: 'rec_sheet_refresh', options: {} }], [
+			{ feedbackId: 'rec_sheet_problem', options: {}, style: { bgcolor: rgb(200, 100, 0) } },
 		])
 
 		this.engine.visible().forEach((inp, idx) => {

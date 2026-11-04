@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs'
 /**
  * A pretend OBS for tests: speaks obs-websocket v5, has audio inputs with a
  * synthetic signal, applies gain filters and the fader, and sends meters at
@@ -34,6 +35,9 @@ export class FakeObs {
 	inputs: FakeInput[] = []
 	requests: { type: string; data: Record<string, unknown> }[] = []
 	password: string
+	/** Write an (empty-ish) file where OBS says it recorded, on stop */
+	writeFiles = false
+	takeName: string | null = null
 	rec = { active: false, paused: false, directory: '/nonexistent/obs-recordings', format: '%CCYY-%MM-%DD %hh-%mm-%ss' }
 	#timer: NodeJS.Timeout
 	port = 0
@@ -226,13 +230,16 @@ export class FakeObs {
 			case 'StartRecord':
 				if (this.rec.active) throw new Error('Recording is already active')
 				this.rec.active = true
+				// like OBS: the file name is fixed when the take starts
+				this.takeName = this.rec.format
 				this.event('RecordStateChanged', { outputActive: true, outputState: 'OBS_WEBSOCKET_OUTPUT_STARTED', outputPath: null }, 64)
 				return {}
 			case 'StopRecord': {
 				if (!this.rec.active) throw new Error('Recording is not active')
 				this.rec.active = false
 				this.rec.paused = false
-				const outputPath = `${this.rec.directory}/${this.rec.format}.mkv`
+				const outputPath = `${this.rec.directory}/${this.takeName ?? this.rec.format}.mkv`
+				if (this.writeFiles) writeFileSync(outputPath, 'fake recording')
 				this.event('RecordStateChanged', { outputActive: false, outputState: 'OBS_WEBSOCKET_OUTPUT_STOPPED', outputPath }, 64)
 				return { outputPath }
 			}

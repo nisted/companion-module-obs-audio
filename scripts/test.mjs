@@ -10,6 +10,8 @@ const dir = mkdtempSync(join(tmpdir(), 'obs-audio-test-'))
 const files = []
 for (const [name, entry] of [
 	['core.test.mjs', '../core/test/all.test.ts'],
+	['core-joining.test.mjs', '../core/test/joining.test.ts'],
+	['core-recordings.test.mjs', '../core/test/recordings/recordings.test.ts'],
 	['obs-audio.test.mjs', '../test/all.test.ts'],
 ]) {
 	const outfile = join(dir, name)
@@ -24,5 +26,6 @@ for (const [name, entry] of [
 	})
 	files.push(outfile)
 }
-const r = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' })
+// the recordings tests use UK dates and times
+const r = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit', env: { ...process.env, TZ: process.env.TZ ?? 'Europe/London' } })
 process.exit(r.status ?? 1)
