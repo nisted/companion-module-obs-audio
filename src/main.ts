@@ -515,7 +515,7 @@ export default class ObsAudioInstance extends InstanceBase<ObsAudioTypes> {
 				label: CONN_LABELS.webPort,
 				width: 9,
 				default: '8890',
-				tooltip: 'The port the fader and meter page lives on. Open http://<this computer>:<port>/ in any browser on the network. 0 switches the page off.',
+				tooltip: 'The port the fader and meter page lives on. Open http://<this computer>:<port>/ in any browser on the network. 0 switches the page off. More than one OBS Audio connection? Give each its own port (8891, 8892 … up to 8899); ATEM Audio starts at 8900.',
 			}),
 			...lock({
 				type: 'dropdown',

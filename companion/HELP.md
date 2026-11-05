@@ -39,6 +39,8 @@ Heads up: connection fields don't take variables any more (that's Companion's ru
 - the `$(OBS_Audio:page_url)` variable
 - `http://<this computer's address>:8890/`
 
+More than one OBS? Give each connection its own port: 8891, 8892 and so on up to 8899. ATEM Audio starts at 8900, so they won't squabble.
+
 **Fader page available on** decides who can open it: every network, this computer only, or one network. If others on the network shouldn't be fiddling, set a PIN.
 
 **4. Want it inside OBS?** Go to **Docks → Custom Browser Docks** and add the same address.
